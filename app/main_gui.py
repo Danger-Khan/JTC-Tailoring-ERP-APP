@@ -556,9 +556,11 @@ class AtelierERPApp(tk.Tk):
             self._login_images.append(card)
             cv.create_image(cx, card_top, image=card, anchor="n")
 
-        cv.create_text(cx, card_top + 104, text="JTC Secure Login", anchor="n",
+        lt = {**TRANSLATIONS["en"], **TRANSLATIONS.get(self.current_lang, {})}
+        cv.create_text(cx, card_top + 104, text=lt.get("login_heading", "JTC Secure Login"),
+                       anchor="n",
                        fill=self.colors["text_main"], font=(FONT_FAMILY, 15))
-        cv.create_text(cx, card_top + 132, text="Enter your administrator password",
+        cv.create_text(cx, card_top + 132, text=lt.get("login_sub", "Enter your administrator password"),
                        anchor="n", fill=self.colors["text_muted"], font=(FONT_FAMILY, 9))
 
         self.ent_pwd = tk.Entry(cv, show="*", font=(FONT_FAMILY, 12), justify="center",
@@ -570,7 +572,7 @@ class AtelierERPApp(tk.Tk):
         cv.create_window(cx, card_top + 164, window=self.ent_pwd, anchor="n",
                          width=272, height=36)
 
-        btn = tk.Button(cv, text="Login to Dashboard", bg=PRIMARY, fg="#F1F1F0",
+        btn = tk.Button(cv, text=lt.get("login_btn", "Login to Dashboard"), bg=PRIMARY, fg="#F1F1F0",
                         font=(FONT_FAMILY, 10, "bold"), bd=0, cursor="hand2",
                         activebackground=PRIMARY, activeforeground="#F1F1F0",
                         command=self.authenticate)
@@ -582,8 +584,9 @@ class AtelierERPApp(tk.Tk):
         """Fallback used when the brand images cannot be loaded (Pillow
         missing, or app/Images moved) -- the original flat dialog."""
         self.login_dlg.geometry("400x250")
-        tk.Label(self.login_dlg, text="🔒 JTC Secure Login", font=(FONT_FAMILY, 16, "bold"), bg=self.colors["bg_card"], fg=self.colors["text_main"]).pack(pady=(30, 10))
-        tk.Label(self.login_dlg, text="Please enter your administrator password:", font=(FONT_FAMILY, 9), bg=self.colors["bg_card"], fg=self.colors["text_muted"]).pack()
+        lt = {**TRANSLATIONS["en"], **TRANSLATIONS.get(self.current_lang, {})}
+        tk.Label(self.login_dlg, text="\U0001F512 " + lt.get("login_heading", "JTC Secure Login"), font=(FONT_FAMILY, 16, "bold"), bg=self.colors["bg_card"], fg=self.colors["text_main"]).pack(pady=(30, 10))
+        tk.Label(self.login_dlg, text=lt.get("login_prompt", "Please enter your administrator password:"), font=(FONT_FAMILY, 9), bg=self.colors["bg_card"], fg=self.colors["text_muted"]).pack()
 
         self.ent_pwd = tk.Entry(self.login_dlg, show="*", font=(FONT_FAMILY, 12), justify="center",
                                 bg=self.colors["bg_body"], fg=self.colors["text_main"],
@@ -592,7 +595,7 @@ class AtelierERPApp(tk.Tk):
         self.ent_pwd.pack(pady=15, padx=50, fill=tk.X)
         self.ent_pwd.bind("<Return>", lambda e: self.authenticate())
 
-        tk.Button(self.login_dlg, text="🔐 Login to Dashboard", bg=PRIMARY, fg="white", font=(FONT_FAMILY, 10, "bold"), bd=0, pady=8, cursor="hand2", command=self.authenticate).pack(fill=tk.X, padx=50)
+        tk.Button(self.login_dlg, text="\U0001F510 " + lt.get("login_btn", "Login to Dashboard"), bg=PRIMARY, fg="white", font=(FONT_FAMILY, 10, "bold"), bd=0, pady=8, cursor="hand2", command=self.authenticate).pack(fill=tk.X, padx=50)
 
     def authenticate(self):
         """Check the typed password against the stored hash.
@@ -2015,20 +2018,21 @@ class AtelierERPApp(tk.Tk):
         self._attach_page_backdrop(sec)
 
         self.lbl_inv_title, self.lbl_inv_sub, hdr_right = self._page_header(
-            sec, "Inventory", "Fabric and trim stock on hand")
-        self.btn_inv_add = self._primary_button(hdr_right, "+ Add Item",
+            sec, TRANSLATIONS[self.current_lang].get("inv_title", "Inventory"),
+            TRANSLATIONS[self.current_lang].get("inv_sub", "Fabric and trim stock on hand"))
+        self.btn_inv_add = self._primary_button(hdr_right, TRANSLATIONS[self.current_lang].get("inv_btn_add", "+ Add Item"),
                                                 self.open_add_inventory_modal)
         self.btn_inv_add.pack(side=self._side(tk.RIGHT))
 
         tools = tk.Frame(sec, bg=self.colors["bg_body"])
         tools.pack(fill=tk.X, pady=(0, 12))
-        self.btn_inv_in = self._toolbar_button(tools, "➕ Stock In",
+        self.btn_inv_in = self._toolbar_button(tools, TRANSLATIONS[self.current_lang].get("inv_btn_in", "\u2795 Stock In"),
                                                lambda: self.adjust_inventory(1))
         self.btn_inv_in.pack(side=self._side(tk.LEFT), padx=(0, 7))
-        self.btn_inv_out = self._toolbar_button(tools, "➖ Stock Out",
+        self.btn_inv_out = self._toolbar_button(tools, TRANSLATIONS[self.current_lang].get("inv_btn_out", "\u2796 Stock Out"),
                                                 lambda: self.adjust_inventory(-1))
         self.btn_inv_out.pack(side=self._side(tk.LEFT), padx=(0, 7))
-        self.btn_inv_delete = self._toolbar_button(tools, "🗑️ Delete",
+        self.btn_inv_delete = self._toolbar_button(tools, TRANSLATIONS[self.current_lang].get("inv_btn_delete", "\U0001F5D1\ufe0f Delete"),
                                                    self.delete_selected_inventory,
                                                    danger=True)
         self.btn_inv_delete.pack(side=self._side(tk.LEFT))
@@ -2038,22 +2042,23 @@ class AtelierERPApp(tk.Tk):
         strip.pack(fill=tk.X, pady=(0, 12))
         self.lbl_inv_stat_items, self.lbl_inv_stat_items_cap = self._stat_tile(
             strip, dict(side=self._side(tk.LEFT), expand=True, fill=tk.X, padx=(0, 7)),
-            "📦", 0, "Items Tracked", section="inventory")
+            "📦", 0, TRANSLATIONS[self.current_lang].get("inv_stat_items", "Items Tracked"), section="inventory")
         self.lbl_inv_stat_units, self.lbl_inv_stat_units_cap = self._stat_tile(
             strip, dict(side=self._side(tk.LEFT), expand=True, fill=tk.X, padx=7),
-            "🧶", 0, "Total Units", section="inventory")
+            "🧶", 0, TRANSLATIONS[self.current_lang].get("inv_stat_units", "Total Units"), section="inventory")
         self.lbl_inv_stat_low, self.lbl_inv_stat_low_cap = self._stat_tile(
             strip, dict(side=self._side(tk.LEFT), expand=True, fill=tk.X, padx=7),
-            "⚠️", 0, "Low Stock", section="inventory")
+            "⚠️", 0, TRANSLATIONS[self.current_lang].get("inv_stat_low", "Low Stock"), section="inventory")
         self.lbl_inv_stat_out, self.lbl_inv_stat_out_cap = self._stat_tile(
             strip, dict(side=self._side(tk.LEFT), expand=True, fill=tk.X, padx=(7, 0)),
-            "🚫", 0, "Out Of Stock", section="inventory")
+            "🚫", 0, TRANSLATIONS[self.current_lang].get("inv_stat_out", "Out Of Stock"), section="inventory")
 
         table_card = self._neu_card(sec, dict(fill=tk.BOTH, expand=True), padx=14, pady=12)
         self.tree_inventory = ttk.Treeview(table_card, columns=self.inv_headers,
                                            show="headings")
         for c in self.inv_headers:
-            self.tree_inventory.heading(c, text=c.replace("_", " ").upper())
+            self.tree_inventory.heading(
+                c, text=TRANSLATIONS[self.current_lang].get("inv_col_" + c, c.replace("_", " ").upper()))
             self.tree_inventory.column(c, width=110)
         self._apply_tree_direction(self.tree_inventory, self.inv_headers)
         self.tree_inventory.pack(fill=tk.BOTH, expand=True)
@@ -2162,7 +2167,7 @@ class AtelierERPApp(tk.Tk):
                   ("quantity", "Quantity"), ("unit", "Unit (m / pcs)"),
                   ("reorder_level", "Reorder level")]
         entries = {}
-        tk.Label(dlg, text="📦 New Inventory Item", font=(FONT_FAMILY, 13, "bold"),
+        tk.Label(dlg, text=TRANSLATIONS[self.current_lang].get("inv_modal_title", "\U0001F4E6 New Inventory Item"), font=(FONT_FAMILY, 13, "bold"),
                  bg=self.colors["bg_card"], fg=self.colors["text_main"]).pack(
             anchor=self._anchor("w"), padx=22, pady=(20, 14))
         for key, label in fields:
@@ -2202,7 +2207,7 @@ class AtelierERPApp(tk.Tk):
 
         btns = tk.Frame(dlg, bg=self.colors["bg_card"])
         btns.pack(fill=tk.X, padx=22, pady=(16, 20))
-        self._primary_button(btns, "Save Item", save).pack(side=self._side(tk.RIGHT))
+        self._primary_button(btns, TRANSLATIONS[self.current_lang].get("inv_modal_save", "Save Item"), save).pack(side=self._side(tk.RIGHT))
         self.inv_modal_entries = entries
         self.inv_modal = dlg
 
@@ -4139,6 +4144,27 @@ class AtelierERPApp(tk.Tk):
             self.chk_ai_panel.configure(text=t.get("ai_toggle", "Enable command bar"))
             self.btn_api_settings.configure(text=t.get("api_btn", "Custom API\u2026"))
             self.lbl_ai_hint.configure(text=t.get("ai_hint", "Ctrl+K opens it"))
+        # Inventory: the page had no keys at all until now, so nothing here
+        # ever moved with the language.
+        if hasattr(self, "lbl_inv_title"):
+            self.lbl_inv_title.configure(text=t.get("inv_title", "Inventory"))
+            self.lbl_inv_sub.configure(text=t.get("inv_sub", "Fabric and trim stock on hand"))
+            self.btn_inv_add.configure(text=t.get("inv_btn_add", "+ Add Item"))
+            self.btn_inv_in.configure(text=t.get("inv_btn_in", "➕ Stock In"))
+            self.btn_inv_out.configure(text=t.get("inv_btn_out", "➖ Stock Out"))
+            self.btn_inv_delete.configure(text=t.get("inv_btn_delete", "🗑️ Delete"))
+            self.lbl_inv_stat_items_cap.configure(
+                text=self._track(t.get("inv_stat_items", "Items Tracked")))
+            self.lbl_inv_stat_units_cap.configure(
+                text=self._track(t.get("inv_stat_units", "Total Units")))
+            self.lbl_inv_stat_low_cap.configure(
+                text=self._track(t.get("inv_stat_low", "Low Stock")))
+            self.lbl_inv_stat_out_cap.configure(
+                text=self._track(t.get("inv_stat_out", "Out Of Stock")))
+            for c in self.inv_headers:
+                self.tree_inventory.heading(
+                    c, text=t.get("inv_col_" + c, c.replace("_", " ").upper()))
+
         if hasattr(self, "btn_fin_delete"):
             self.btn_fin_delete.configure(text=t.get("fin_btn_delete", "\U0001F5D1 Delete Record"))
         if hasattr(self, "btn_cust_whatsapp"):

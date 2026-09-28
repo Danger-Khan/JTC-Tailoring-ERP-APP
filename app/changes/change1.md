@@ -524,3 +524,60 @@ reproduced verbatim and was diff-checked against a backup before the
 originals were removed.
 
 ---
+<!-- ===== session: 2026-09-28 (d) ===== -->
+
+## 2026-09-28 — Languages section
+
+Audited the language packs and closed the gaps.
+
+**Pashto was effectively broken.** 29 keys against English's 267 — **10.5%
+coverage**. Choosing Pashto gave a mirrored RTL layout with a
+mostly-*English* interface, which is arguably worse than not offering it.
+The pack had also dropped the emoji prefixes the nav buttons and card
+headings are laid out around, so the Pashto sidebar had no icons at all.
+Rewritten complete: **306/306 keys**, icons restored, day and month names
+included.
+
+**Three screens had never been internationalised at all** — no keys existed
+for them in any pack, so they were English even in fully-translated Urdu:
+- the login screen (both the photo panel and the plain fallback),
+- the whole Inventory page — header, toolbar, the four summary tiles, the
+  table headings and the Add Item modal,
+- the add-order modal's field labels.
+
+44 new English keys, wired through `apply_language_pack` so they follow a
+live switch, and translated into Urdu and Pashto. Field values, dropdown
+options and defaults were left untouched — labels only.
+
+**Urdu** brought back to 306/306 (it was missing the 39 new keys).
+
+**A guard so this cannot rot again** (`app/tests/test_translations.py`, 9
+tests, no Tk):
+- every offered language has a pack, and every pack is offered — this is the
+  check that would have caught `translations.py` importing `zh` and `ru`
+  after those files were deleted, which broke every entry point,
+- every pack covers every key,
+- no value is left identical to English (bar an explicit allow-list for the
+  CPU/RAM/GPU acronyms) — a verbatim copy is an untranslated string wearing
+  a translation's clothes,
+- `cal_days`/`cal_months` keep their type and length,
+- `{placeholder}`s survive translation, since a dropped one raises at
+  `.format()` time in that language only,
+- leading emoji are preserved, which is exactly how the Pashto pack lost its
+  icons unnoticed.
+
+Each guard was mutation-tested: a key dropped, an English string copied in,
+an emoji removed, a placeholder deleted and a tuple shortened all make the
+relevant test fail.
+
+**Coverage now:** en 306, ur 306, ps 306 — all at 100%.
+
+**Verification:** unit tests **28/28** (was 19; 9 new); GUI smoke 146/146;
+screenshotted Pashto across dashboard, inventory, calendar and settings.
+
+**Caveat worth flagging:** the Pashto pack was written in one pass and wants
+a read-through by a native speaker, particularly the tailoring vocabulary
+(collar, daman, paancha, stitching styles) where the shop's own usage may
+differ from the standard term. A note to that effect is in the file header.
+
+---
