@@ -388,6 +388,178 @@ def run_gui_smoke_test():
         app.set_language("en")
         app.update()
 
+        # --- Admin password (bcrypt, stored as a hash) ---
+        from app.utils import admin_password as pw
+        state = app._app_state_for_current_data()
+        check("factory password opens a fresh install",
+              pw.verify("admin123", "") and pw.is_factory_default(""))
+        check("wrong factory password refused", not pw.verify("nope", ""))
+        h = pw.hash_password("Jhagra#2026")
+        check("a set password replaces the factory one",
+              pw.verify("Jhagra#2026", h) and not pw.verify("admin123", h))
+        check("a corrupt stored hash reads as wrong, not a crash",
+              pw.verify("anything", "not-a-bcrypt-hash") is False)
+        check("new password is validated",
+              pw.validate_new("abc", "abc")[1] == "pw_err_short"
+              and pw.validate_new("abcd", "abce")[1] == "pw_err_mismatch"
+              and pw.validate_new("abcd", "abcd")[0] is True)
+        state.save(admin_password_hash=h)
+        check("login honours the stored hash",
+              pw.verify("Jhagra#2026",
+                        state.load().get("admin_password_hash", "")))
+        state.save(admin_password_hash="")
+        app.show_section("admin")
+        app.update()
+        app._refresh_password_hint()
+        check("settings warns while on the default password",
+              "default" in app.lbl_pw_hint.cget("text").lower()
+              or app.lbl_pw_hint.cget("fg") == gui.TERRACOTTA)
+        dlg = app.open_change_password_modal()
+        check("change-password dialog opens", dlg.winfo_exists() == 1)
+        dlg.destroy()
+
+        # --- System monitor (optional, off by default) ---
+        check("system monitor is off by default", app.system_monitor_enabled is False)
+        check("monitor strip exists but is not packed",
+              app.sysmon_frame.winfo_exists() == 1
+              and app.sysmon_frame.winfo_ismapped() == 0)
+        check("nothing is polling while it is off", app._sysmon_job is None)
+        app.var_system_monitor.set(True)
+        app.on_system_monitor_toggle()
+        app.update()
+        check("enabling packs the strip and starts polling",
+              app.sysmon_frame.winfo_ismapped() == 1 and app._sysmon_job is not None)
+        check("the toggle persists", state.load().get("system_monitor") is True)
+        snap = gui.sysmon.snapshot()
+        check("snapshot always returns every key",
+              set(snap) == {"internet", "cpu", "memory", "disk", "gpu", "psutil"})
+        app._paint_system_monitor(snap)
+        app.update()
+        check("monitor paints a real reading",
+              app.sysmon_rows["internet"][1].cget("text") in
+              (gui.TRANSLATIONS["en"]["sys_online"], gui.TRANSLATIONS["en"]["sys_offline"]))
+        # A probe that cannot answer must render as a dash, not vanish.
+        app._paint_system_monitor({"internet": False, "cpu": None, "memory": None,
+                                   "disk": None, "gpu": None, "psutil": False})
+        app.update()
+        check("an unavailable probe renders as a dash",
+              app.sysmon_rows["cpu"][1].cget("text") == "\u2014"
+              and app.sysmon_rows["gpu"][1].cget("text") == "\u2014")
+        app.var_system_monitor.set(False)
+        app.on_system_monitor_toggle()
+        app.update()
+        check("disabling unpacks it and stops polling",
+              app.sysmon_frame.winfo_ismapped() == 0 and app._sysmon_job is None)
+
+        # --- Command bar (optional, off by default) ---
+        check("command bar is off by default", app.ai_panel_enabled is False)
+        app.toggle_command_bar()
+        check("disabled command bar does not open", app._cmdbar is None)
+        app.var_ai_panel.set(True)
+        app.on_ai_panel_toggle()
+        app.update()
+        check("the toggle persists", state.load().get("ai_panel") is True)
+        app.toggle_command_bar()
+        app.update()
+        check("command bar opens", app._cmdbar is not None and app._cmdbar.winfo_exists() == 1)
+        for phrase, want in (("finance", "finance"), ("show me the stock", "inventory"),
+                             ("customers please", "customer"), ("calendar", "calendar"),
+                             ("settings", "admin")):
+            app.open_command_bar()
+            app.update()
+            app.run_command(phrase)
+            app.update()
+            check("command '%s' opens %s" % (phrase, want), app.current_section == want)
+        app.open_command_bar()
+        app.update()
+        check("an unknown phrase routes nowhere", app.run_command("zzz qqq") is None)
+        check("the bar stays open after a miss", app._cmdbar is not None)
+        app.open_command_bar()
+        app.update()
+        app.run_command("dark mode")
+        app.update()
+        check("command bar switches theme", app.current_theme == "dark")
+        app.toggle_theme()
+        app.update()
+        # With no endpoint configured the API lookup must be a quiet no-op,
+        # never a hang or a stack trace.
+        check("no configured API means no lookup", app._ask_command_api("anything") is None)
+        app.close_command_bar()
+        app.var_ai_panel.set(False)
+        app.on_ai_panel_toggle()
+        app.update()
+
+        # --- Finance: delete a ledger row ---
+        app.show_section("finance")
+        app.update()
+        fdb = app._finance_db_for_current_data()
+        before = len(fdb.get_rows())
+        check("finance ledger has rows to delete", before > 0)
+        target = fdb.get_rows()[0]["order_id"]
+        check("deleting a ledger row removes exactly it",
+              fdb.delete_row(target) is True and len(fdb.get_rows()) == before - 1)
+        check("deleting an unknown id is a no-op", fdb.delete_row("NOPE-999") is False)
+        check("the order itself survives the ledger delete",
+              any(str(o.get("id")) == target for o in app.orders))
+        app.reload_all_data()
+        check("the ledger row returns on the next sync",
+              len(fdb.get_rows()) == before)
+        check("finance delete button exists", app.btn_fin_delete.winfo_exists() == 1)
+
+        # --- Cards link to the page they summarise ---
+        app.show_section("dashboard")
+        app.update()
+        for widget, want in ((app.lbl_stat_orders, "order_card"),
+                             (app.lbl_stat_customers, "customer"),
+                             (app.lbl_stat_onduty, "employee")):
+            app.show_section("dashboard")
+            app.update()
+            # Click the number itself, not the card padding -- a card is
+            # mostly covered by its own labels.
+            widget.event_generate("<Button-1>")
+            app.update()
+            check("stat tile links to %s" % want, app.current_section == want)
+        check("linked cards show a hand cursor",
+              app.lbl_stat_customers.cget("cursor") == "hand2")
+
+        # --- Services that existed but were never wired up ---
+        url = gui.NotificationService.format_whatsapp_url("0300 1234567", "Hi there")
+        check("whatsapp link normalises a local number",
+              "phone=923001234567" in url and "text=Hi%20there" in url)
+        est = gui.GarmentCalculator.estimate_fabric_meters("Waistcoat", 40.0, 38.0)
+        check("fabric estimate returns metres", est["recommended_meters"] == 1.25)
+        est2 = gui.GarmentCalculator.estimate_fabric_meters("Shalwar Kameez", 42.0, 46.0)
+        check("fabric estimate allows for a larger chest",
+              est2["recommended_meters"] > est["recommended_meters"])
+        check("customer page offers both services",
+              app.btn_cust_whatsapp.winfo_exists() == 1
+              and app.btn_cust_fabric.winfo_exists() == 1)
+
+        # Every new control must move with the language pack too -- the cards
+        # are built with English text and re-labelled afterwards.
+        app.set_language("ur")
+        app.show_section("admin")
+        app.update()
+        ur = gui.TRANSLATIONS["ur"]
+        check("new settings cards translate",
+              app.lbl_pw_label.cget("text") == ur["pw_label"]
+              and app.lbl_mon_label.cget("text") == ur["mon_label"]
+              and app.lbl_ai_label.cget("text") == ur["ai_label"]
+              and app.chk_system_monitor.cget("text") == ur["mon_toggle"])
+        app.show_section("customer")
+        app.update()
+        check("new toolbar buttons translate",
+              app.btn_cust_whatsapp.cget("text") == ur["btn_whatsapp"]
+              and app.btn_cust_fabric.cget("text") == ur["fabric_btn"])
+        app.show_section("finance")
+        app.update()
+        check("finance delete button translates",
+              app.btn_fin_delete.cget("text") == ur["fin_btn_delete"])
+        check("machine readout translates",
+              app.sysmon_rows["cpu"][0].cget("text") == ur["sys_cpu"])
+        app.set_language("en")
+        app.update()
+
         # --- Sidebar quick controls ---
         check("sidebar has a theme chip",
               hasattr(app, "btn_quick_theme") and app.btn_quick_theme.winfo_exists())

@@ -20,6 +20,24 @@ DEFAULTS = {
     # "windowed". Fullscreen is the default: this runs on a shop counter
     # machine where the app is the only thing on screen.
     "display_mode": "fullscreen",
+
+    # --- Optional features, all off by default -----------------------------
+    # The shop counter should stay uncluttered unless the owner asks for
+    # more, so every one of these starts disabled.
+    "system_monitor": False,   # machine health readout (net/CPU/RAM/disk/GPU)
+    "ai_panel": False,         # the slide-up command bar
+
+    # bcrypt hash of the admin password. Empty means "never changed", and the
+    # login falls back to the built-in default -- so an existing install keeps
+    # working after an update instead of locking the owner out.
+    "admin_password_hash": "",
+
+    # Optional endpoint the command bar can ask to interpret a phrase it does
+    # not recognise. Stored in plain JSON on the local machine, same as every
+    # other preference here -- fine for a single shop-counter PC, not a place
+    # for a credential that matters elsewhere.
+    "api_url": "",
+    "api_key": "",
 }
 
 

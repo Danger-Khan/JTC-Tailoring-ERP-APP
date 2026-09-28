@@ -111,6 +111,23 @@ class FinanceDB:
             )
             conn.commit()
 
+    def delete_row(self, order_id):
+        """Drop one order's ledger line. Returns True if a row went.
+
+        Deliberately does not touch orders.xlsx. The table is rebuilt from
+        the live orders on every sync(), so this clears a line that is wrong
+        or stale right now -- if the order still exists, its line reappears
+        on the next reload. Removing the order itself is a separate, louder
+        action on the Orders side.
+        """
+        oid = str(order_id or "").strip()
+        if not oid:
+            return False
+        with self._connect() as conn:
+            cur = conn.execute("DELETE FROM order_finance WHERE order_id = ?", (oid,))
+            conn.commit()
+            return cur.rowcount > 0
+
     def get_totals(self):
         """Shop-wide SUM(...) aggregates via SQL — used by the Dashboard's
         finance card and the Finance view's summary strip."""

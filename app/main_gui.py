@@ -18,6 +18,10 @@ try:
     from utils.app_state import AppStateCache
     from utils.assets import AssetStore
     from views.expense_view import ExpenseView
+    from utils import admin_password as pw_store
+    from services import system_monitor as sysmon
+    from services.notification_service import NotificationService
+    from services.garment_engine import GarmentCalculator
 except ImportError:
     from app.services import order_card_service as card_svc
     from app.views.order_card_view import OrderCardView
@@ -26,6 +30,10 @@ except ImportError:
     from app.utils.app_state import AppStateCache
     from app.utils.assets import AssetStore
     from app.views.expense_view import ExpenseView
+    from app.utils import admin_password as pw_store
+    from app.services import system_monitor as sysmon
+    from app.services.notification_service import NotificationService
+    from app.services.garment_engine import GarmentCalculator
 
 try:
     from reportlab.pdfgen import canvas
@@ -275,6 +283,17 @@ class AtelierERPApp(tk.Tk):
         valid_langs = [code for code, _ in LANGUAGE_OPTIONS]
         self.current_lang = saved_state["lang"] if saved_state["lang"] in valid_langs else "en"
         self.current_section = saved_state["last_section"]
+        # Optional features, both off unless the owner switched them on.
+        self.system_monitor_enabled = bool(saved_state.get("system_monitor", False))
+        self.ai_panel_enabled = bool(saved_state.get("ai_panel", False))
+        self._sysmon_job = None
+        # Written by the probe worker, read only on the Tk thread.
+        self._sysmon_latest = None
+        # One dedicated worker: the probe forks nvidia-smi, and it must never
+        # queue behind a data reload (or hold one up).
+        self._sysmon_pool = ThreadPoolExecutor(max_workers=1,
+                                               thread_name_prefix="sysmon")
+        self._cmdbar = None
         self.display_mode = (saved_state.get("display_mode")
                              if saved_state.get("display_mode") in ("fullscreen", "windowed")
                              else "fullscreen")
@@ -301,6 +320,9 @@ class AtelierERPApp(tk.Tk):
         self.bind("<Control-T>", self.toggle_theme)
         self.bind("<Control-g>", self.cycle_language)
         self.bind("<Control-G>", self.cycle_language)
+        # Ctrl+K raises the command bar (when the feature is on).
+        self.bind("<Control-k>", self.toggle_command_bar)
+        self.bind("<Control-K>", self.toggle_command_bar)
 
         # Destructive operations are available only after an administrator login.
         self.current_user_role = "Viewer"
@@ -448,6 +470,11 @@ class AtelierERPApp(tk.Tk):
                 pass
 
     def on_app_close(self):
+        self._stop_system_monitor()
+        try:
+            self._sysmon_pool.shutdown(wait=False)
+        except Exception:
+            pass
         """Saves the session cache one last time (in case the 5s
         auto-refresh loop hasn't caught the latest tweak yet) before the
         window actually closes."""
@@ -568,8 +595,14 @@ class AtelierERPApp(tk.Tk):
         tk.Button(self.login_dlg, text="🔐 Login to Dashboard", bg=PRIMARY, fg="white", font=(FONT_FAMILY, 10, "bold"), bd=0, pady=8, cursor="hand2", command=self.authenticate).pack(fill=tk.X, padx=50)
 
     def authenticate(self):
+        """Check the typed password against the stored hash.
+
+        An install that has never set one still accepts the factory password,
+        so updating the app cannot lock the owner out of their own till.
+        """
         pwd = self.ent_pwd.get()
-        if pwd == "admin123":
+        stored = self._app_state_for_current_data().load().get("admin_password_hash", "")
+        if pw_store.verify(pwd, stored):
             self.current_user_role = "Administrator"
             self.login_dlg.destroy()
             self.initialize_application()
@@ -826,6 +859,9 @@ class AtelierERPApp(tk.Tk):
         # Packed side=BOTTOM after the owner block's divider, so it settles
         # just above it rather than being pushed off by the nav list.
         self._sidebar_quick_controls(sidebar_shell)
+        # Built unconditionally, packed only when switched on.
+        self._build_system_monitor(sidebar_shell)
+        self._apply_system_monitor_visibility()
 
         sidebar = tk.Frame(sidebar_shell, bg=self.colors["bg_sidebar"])
         sidebar.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
@@ -1048,9 +1084,54 @@ class AtelierERPApp(tk.Tk):
                       font=(FONT_FAMILY, max(8, int(size * 0.34)), "bold"))
         return c
 
-    def _stat_tile(self, parent, pack_opts, icon, value, label):
+    def _link_card(self, widget, section, tooltip=None):
+        """Make a card open a section when clicked.
+
+        Binds the whole subtree, not just the outer frame: a card is mostly
+        covered by its own labels, and a click that lands on the number
+        rather than the padding would otherwise do nothing -- which reads as
+        the link being broken.
+
+        Children are bound as they exist at call time, so this runs after a
+        card is fully built.
+        """
+        t = {**TRANSLATIONS["en"], **TRANSLATIONS.get(self.current_lang, {})}
+        hint = tooltip or t.get("link_open", "Open")
+
+        def go(_event=None):
+            self.show_section(section)
+            return "break"
+
+        def walk(w):
+            try:
+                w.bind("<Button-1>", go, add="+")
+                # A pointing cursor is the only affordance a flat card has.
+                if w.winfo_class() not in ("Entry", "TCombobox", "Treeview"):
+                    w.configure(cursor="hand2")
+            except tk.TclError:
+                pass
+            for child in w.winfo_children():
+                walk(child)
+
+        walk(widget)
+        # The canvas wrapper around a rounded card sits above its own content
+        # for clicks on the padding, so bind that too.
+        holder = getattr(widget, "master", None)
+        if holder is not None and holder.winfo_class() == "Canvas":
+            try:
+                holder.bind("<Button-1>", go, add="+")
+                holder.configure(cursor="hand2")
+            except tk.TclError:
+                pass
+        widget._linked_section = section
+        return widget
+
+    def _stat_tile(self, parent, pack_opts, icon, value, label, section=None):
         """Icon + big number + tracked caption tile. Returns the value label
-        so the caller can keep it and update the number later."""
+        so the caller can keep it and update the number later.
+
+        Passing `section` turns the whole tile into a link to that page.
+        """
         card = self._neu_card(parent, pack_opts, padx=16, pady=14)
         tile = self._neu_well(card, dict(side=self._side(tk.LEFT), padx=(0, 13)), padx=8, pady=5)
         tk.Label(tile, text=icon, font=(FONT_FAMILY, 15), bg=self.colors["well"],
@@ -1063,6 +1144,8 @@ class AtelierERPApp(tk.Tk):
         cap = tk.Label(box, text=self._track(label), font=(FONT_FAMILY, 7, "bold"),
                        bg=self.colors["bg_card"], fg=self.colors["text_4"])
         cap.pack(anchor=self._anchor("w"))
+        if section:
+            self._link_card(card, section)
         return val, cap
 
     def _tinted_palette(self, base):
@@ -1412,11 +1495,14 @@ class AtelierERPApp(tk.Tk):
         tiles = tk.Frame(sec, bg=self.colors["bg_body"])
         tiles.pack(fill=tk.X, pady=(0, 14))
         self.lbl_stat_orders, self.lbl_stat_orders_cap = self._stat_tile(
-            tiles, dict(side=self._side(tk.LEFT), expand=True, fill=tk.X, padx=(0, 7)), "\U0001F9FE", 0, "Total Orders")
+            tiles, dict(side=self._side(tk.LEFT), expand=True, fill=tk.X, padx=(0, 7)), "\U0001F9FE", 0, "Total Orders",
+            section="order_card")
         self.lbl_stat_customers, self.lbl_stat_customers_cap = self._stat_tile(
-            tiles, dict(side=self._side(tk.LEFT), expand=True, fill=tk.X, padx=7), "\U0001F465", 0, "Customers")
+            tiles, dict(side=self._side(tk.LEFT), expand=True, fill=tk.X, padx=7), "\U0001F465", 0, "Customers",
+            section="customer")
         self.lbl_stat_onduty, self.lbl_stat_onduty_cap = self._stat_tile(
-            tiles, dict(side=self._side(tk.LEFT), expand=True, fill=tk.X, padx=(7, 0)), "✂️", 0, "Tailors On Duty")
+            tiles, dict(side=self._side(tk.LEFT), expand=True, fill=tk.X, padx=(7, 0)), "✂️", 0, "Tailors On Duty",
+            section="employee")
 
         # --- Finance snapshot row: mirrors the Finance section's totals so
         # the money picture is visible without leaving the Dashboard. Values
@@ -1438,6 +1524,9 @@ class AtelierERPApp(tk.Tk):
                                        bg_color=self.colors["well"], stroke_width=7,
                                        theme_colors=self.colors)
             chart.pack(side=self._side(tk.RIGHT))
+            # The money numbers belong to the Finance page; clicking one goes
+            # there rather than leaving the reader to find it in the sidebar.
+            self._link_card(card, "finance")
             return cap, val, chart
 
         self.lbl_fin_paid_title, self.lbl_fin_paid_val, self.chart_fin_paid = money_card(
@@ -1652,6 +1741,14 @@ class AtelierERPApp(tk.Tk):
         self.btn_cust_edit = self._toolbar_button(
             tools, t.get("cust_btn_edit", "✏️ Edit"), self.edit_selected_customer)
         self.btn_cust_edit.pack(side=self._side(tk.LEFT), padx=(0, 7))
+        self.btn_cust_whatsapp = self._toolbar_button(
+            tools, t.get("btn_whatsapp", "💬 WhatsApp"),
+            self.whatsapp_selected_customer)
+        self.btn_cust_whatsapp.pack(side=self._side(tk.LEFT), padx=(0, 7))
+        self.btn_cust_fabric = self._toolbar_button(
+            tools, t.get("fabric_btn", "🧵 Fabric Estimate"),
+            self.estimate_fabric_for_selected)
+        self.btn_cust_fabric.pack(side=self._side(tk.LEFT), padx=(0, 7))
         self.btn_cust_delete = self._toolbar_button(
             tools, t.get("cust_btn_delete", "🗑️ Delete"),
             self.delete_selected_customer, danger=True)
@@ -1746,13 +1843,13 @@ class AtelierERPApp(tk.Tk):
         strip.pack(fill=tk.X, pady=(0, 12))
         self.lbl_cal_stat_month, self.lbl_cal_stat_month_cap = self._stat_tile(
             strip, dict(side=self._side(tk.LEFT), expand=True, fill=tk.X, padx=(0, 7)),
-            "📅", 0, "Due This Month")
+            "📅", 0, "Due This Month", section="calendar")
         self.lbl_cal_stat_week, self.lbl_cal_stat_week_cap = self._stat_tile(
             strip, dict(side=self._side(tk.LEFT), expand=True, fill=tk.X, padx=7),
-            "⏳", 0, "Due In 7 Days")
+            "⏳", 0, "Due In 7 Days", section="calendar")
         self.lbl_cal_stat_late, self.lbl_cal_stat_late_cap = self._stat_tile(
             strip, dict(side=self._side(tk.LEFT), expand=True, fill=tk.X, padx=(7, 0)),
-            "⚠️", 0, "Overdue")
+            "⚠️", 0, "Overdue", section="calendar")
 
         card = self._neu_card(sec, dict(fill=tk.BOTH, expand=True), padx=16, pady=14)
         bar = tk.Frame(card, bg=self.colors["bg_card"])
@@ -1941,16 +2038,16 @@ class AtelierERPApp(tk.Tk):
         strip.pack(fill=tk.X, pady=(0, 12))
         self.lbl_inv_stat_items, self.lbl_inv_stat_items_cap = self._stat_tile(
             strip, dict(side=self._side(tk.LEFT), expand=True, fill=tk.X, padx=(0, 7)),
-            "📦", 0, "Items Tracked")
+            "📦", 0, "Items Tracked", section="inventory")
         self.lbl_inv_stat_units, self.lbl_inv_stat_units_cap = self._stat_tile(
             strip, dict(side=self._side(tk.LEFT), expand=True, fill=tk.X, padx=7),
-            "🧶", 0, "Total Units")
+            "🧶", 0, "Total Units", section="inventory")
         self.lbl_inv_stat_low, self.lbl_inv_stat_low_cap = self._stat_tile(
             strip, dict(side=self._side(tk.LEFT), expand=True, fill=tk.X, padx=7),
-            "⚠️", 0, "Low Stock")
+            "⚠️", 0, "Low Stock", section="inventory")
         self.lbl_inv_stat_out, self.lbl_inv_stat_out_cap = self._stat_tile(
             strip, dict(side=self._side(tk.LEFT), expand=True, fill=tk.X, padx=(7, 0)),
-            "🚫", 0, "Out Of Stock")
+            "🚫", 0, "Out Of Stock", section="inventory")
 
         table_card = self._neu_card(sec, dict(fill=tk.BOTH, expand=True), padx=14, pady=12)
         self.tree_inventory = ttk.Treeview(table_card, columns=self.inv_headers,
@@ -2182,6 +2279,10 @@ class AtelierERPApp(tk.Tk):
         tbl_bar.pack(fill=tk.X, pady=(8, 8))
         self.lbl_fin_tbl_head = tk.Label(tbl_bar, text="Order Finance Ledger", font=(FONT_FAMILY, 12, "bold"), bg=self.colors["bg_card"], fg=self.colors["text_main"])
         self.lbl_fin_tbl_head.pack(side=self._side(tk.LEFT))
+        self.btn_fin_delete = self._toolbar_button(
+            tbl_bar, TRANSLATIONS[self.current_lang].get("fin_btn_delete", "\U0001F5D1 Delete Record"),
+            self.delete_selected_finance_row, danger=True)
+        self.btn_fin_delete.pack(side=self._side(tk.RIGHT))
 
         table_frame = tk.Frame(self.fin_ledger_container, bg=self.colors["bg_card"])
         table_frame.pack(fill=tk.BOTH, expand=True)
@@ -2355,7 +2456,24 @@ class AtelierERPApp(tk.Tk):
             chart.set_percentage(pct)
             label.configure(text=str(pct) + "%")
 
-        rows = fdb.get_rows()
+        self._repaint_finance_table()
+
+    def _repaint_finance_table(self):
+        """Fill the finance tree from the ledger table, honouring the active
+        Done/Due/All tab.
+
+        Split out of refresh_finance_ui() so deleting a row can repaint
+        straight from the table. Going through the full refresh would re-sync
+        from orders.xlsx first and write the row back before the user saw it
+        go.
+        """
+        if not hasattr(self, "tree_finance") or not self.tree_finance.winfo_exists():
+            return
+        try:
+            rows = self._finance_db_for_current_data().get_rows()
+        except Exception as e:
+            print(f"[FinanceDB] repaint failed: {e}")
+            return
         tab = getattr(self, "finance_tab", "all")
         if tab == "done":
             rows = [r for r in rows if (r.get("remaining") or 0) <= 0 and (r.get("debt") or 0) <= 0 and (r.get("total") or 0) > 0]
@@ -2371,7 +2489,8 @@ class AtelierERPApp(tk.Tk):
                 row.get("order_id", ""), row.get("customer_name", ""), row.get("garment", ""),
                 f"{row.get('total', 0):.2f}", f"{row.get('paid', 0):.2f}",
                 f"{remaining:.2f}", f"{debt:.2f}",
-                row.get("status", ""), row.get("delivery_status", ""),
+                self._status_label(row.get("status", "")),
+                self._status_label(row.get("delivery_status", "")),
             ]
             self.tree_finance.insert("", tk.END, values=values, tags=(tag,) if tag else ())
 
@@ -2436,7 +2555,80 @@ class AtelierERPApp(tk.Tk):
         self.cbo_lang.pack(fill=tk.X, pady=(2, 4))
         self.cbo_lang.bind("<<ComboboxSelected>>", self.on_language_change)
 
-        # Row 2: Garment types + Employee roles
+        # Row 2: Security + the two optional features.
+        # Same fill=X rule as row 1 -- these are content-height cards.
+        row1b = tk.Frame(cards_frame, bg=self.colors["bg_card"])
+        row1b.pack(fill=tk.X, pady=(0, 10))
+
+        c_pw = self._glass_card(row1b, dict(side=self._side(tk.LEFT), fill=tk.X,
+                                            expand=True, padx=(0, 6)))
+        self.lbl_pw_label = tk.Label(c_pw, text="🔒 Admin Password",
+                                     font=(FONT_FAMILY, 10, "bold"),
+                                     bg=self.colors["bg_chart"], fg=self.colors["text_main"])
+        self.lbl_pw_label.pack(anchor=self._anchor("w"), pady=(0, 8))
+        self.btn_change_pw = tk.Button(
+            c_pw, text="Change Password…", command=self.open_change_password_modal,
+            bg=PRIMARY, fg="#F1F1F0", font=(FONT_FAMILY, 8, "bold"), bd=0,
+            padx=12, pady=5, cursor="hand2", activebackground=PRIMARY,
+            activeforeground="#F1F1F0")
+        self.btn_change_pw.pack(fill=tk.X, pady=(2, 4))
+        # Says so out loud while the install is still on the shipped password.
+        self.lbl_pw_hint = tk.Label(c_pw, text="", font=(FONT_FAMILY, 8),
+                                    bg=self.colors["bg_chart"], fg=self.colors["text_3"],
+                                    wraplength=200, justify=self._justify("left"))
+        self.lbl_pw_hint.pack(anchor=self._anchor("w"))
+
+        c_mon = self._glass_card(row1b, dict(side=self._side(tk.LEFT), fill=tk.X,
+                                             expand=True, padx=6))
+        self.lbl_mon_label = tk.Label(c_mon, text="📈 System Monitor",
+                                      font=(FONT_FAMILY, 10, "bold"),
+                                      bg=self.colors["bg_chart"], fg=self.colors["text_main"])
+        self.lbl_mon_label.pack(anchor=self._anchor("w"), pady=(0, 8))
+        self.var_system_monitor = tk.BooleanVar(value=self.system_monitor_enabled)
+        self.chk_system_monitor = tk.Checkbutton(
+            c_mon, text="Show machine health", variable=self.var_system_monitor,
+            command=self.on_system_monitor_toggle, bg=self.colors["bg_chart"],
+            fg=self.colors["text_main"], activebackground=self.colors["bg_chart"],
+            activeforeground=self.colors["text_main"],
+            selectcolor=self.colors["well"], bd=0, highlightthickness=0,
+            font=(FONT_FAMILY, 9), anchor=self._anchor("w"), cursor="hand2")
+        self.chk_system_monitor.pack(fill=tk.X, pady=(2, 4))
+        self.lbl_mon_hint = tk.Label(
+            c_mon, text="Internet · CPU · RAM · Disk · GPU",
+            font=(FONT_FAMILY, 8), bg=self.colors["bg_chart"],
+            fg=self.colors["text_3"], wraplength=200, justify=self._justify("left"))
+        self.lbl_mon_hint.pack(anchor=self._anchor("w"))
+
+        c_ai = self._glass_card(row1b, dict(side=self._side(tk.LEFT), fill=tk.X,
+                                            expand=True, padx=(6, 0)))
+        self.lbl_ai_label = tk.Label(c_ai, text="🤖 Command Bar",
+                                     font=(FONT_FAMILY, 10, "bold"),
+                                     bg=self.colors["bg_chart"], fg=self.colors["text_main"])
+        self.lbl_ai_label.pack(anchor=self._anchor("w"), pady=(0, 8))
+        self.var_ai_panel = tk.BooleanVar(value=self.ai_panel_enabled)
+        self.chk_ai_panel = tk.Checkbutton(
+            c_ai, text="Enable command bar", variable=self.var_ai_panel,
+            command=self.on_ai_panel_toggle, bg=self.colors["bg_chart"],
+            fg=self.colors["text_main"], activebackground=self.colors["bg_chart"],
+            activeforeground=self.colors["text_main"],
+            selectcolor=self.colors["well"], bd=0, highlightthickness=0,
+            font=(FONT_FAMILY, 9), anchor=self._anchor("w"), cursor="hand2")
+        self.chk_ai_panel.pack(fill=tk.X, pady=(2, 2))
+        self.btn_api_settings = tk.Button(
+            c_ai, text="Custom API…", command=self.open_api_settings_modal,
+            bg=self.colors["well"], fg=self.colors["text_muted"],
+            font=(FONT_FAMILY, 8, "bold"), bd=0, padx=10, pady=4, cursor="hand2",
+            activebackground=self.colors["bg_chart"])
+        self.btn_api_settings.pack(fill=tk.X, pady=(2, 4))
+        self.lbl_ai_hint = tk.Label(
+            c_ai, text="Ctrl+K opens it", font=(FONT_FAMILY, 8),
+            bg=self.colors["bg_chart"], fg=self.colors["text_3"],
+            wraplength=200, justify=self._justify("left"))
+        self.lbl_ai_hint.pack(anchor=self._anchor("w"))
+
+        self._refresh_password_hint()
+
+        # Row 3: Garment types + Employee roles
         row2 = tk.Frame(cards_frame, bg=self.colors["bg_card"])
         row2.pack(fill=tk.BOTH, expand=True)
 
@@ -3236,6 +3428,643 @@ class AtelierERPApp(tk.Tk):
                 text="  ·  " + now.strftime("%A, %d %B") + "  ·  " + now.strftime("%H:%M:%S"))
         self.after(1000, self.update_clock)
 
+    def _selected_customer(self):
+        """The selected customer record, or None (having warned)."""
+        t = {**TRANSLATIONS["en"], **TRANSLATIONS.get(self.current_lang, {})}
+        sel = self.tree_customers.selection()
+        if not sel:
+            messagebox.showwarning(t.get("cust_title", "Customers"),
+                                   t.get("cust_select_first", "Select a customer first."),
+                                   parent=self)
+            return None
+        cid = self.tree_customers.set(sel[0], "id")
+        for c in self.customers:
+            if str(c.get("id", "")).strip() == str(cid).strip():
+                return c
+        return None
+
+    def whatsapp_selected_customer(self):
+        """Open a pre-written WhatsApp message for the selected customer.
+
+        Uses the NotificationService that was already in the tree but had
+        never been wired to anything. It only *builds a link* -- nothing is
+        sent without the owner pressing send in WhatsApp, which is the right
+        amount of friction for a message going to a real customer.
+        """
+        t = {**TRANSLATIONS["en"], **TRANSLATIONS.get(self.current_lang, {})}
+        cust = self._selected_customer()
+        if not cust:
+            return
+        phone = clean_val(cust.get("phone"))
+        if not phone:
+            messagebox.showwarning(t.get("cust_title", "Customers"),
+                                   t.get("wa_no_phone", "That customer has no phone number saved."),
+                                   parent=self)
+            return
+        name = clean_val(cust.get("name")) or "Customer"
+        cid = clean_val(cust.get("id"))
+        # Latest order for this customer, if any, so the message can name it.
+        mine = [o for o in self.orders
+                if clean_val(o.get("customer_id")) == cid
+                or clean_val(o.get("customer_id")) == name]
+        if mine:
+            latest = mine[-1]
+            oid = clean_val(latest.get("id")) or "-"
+            balance = 0.0
+            try:
+                balance = float(clean_val(latest.get("remaining")) or 0)
+            except ValueError:
+                balance = 0.0
+            note = NotificationService.send_order_ready_notice(name, phone, oid, balance)
+        else:
+            note = {"whatsapp_url":
+                    NotificationService.format_whatsapp_url(
+                        phone, "Dear %s," % name)}
+        try:
+            import webbrowser
+            webbrowser.open(note["whatsapp_url"])
+        except Exception as e:
+            messagebox.showerror(t.get("cust_title", "Customers"), str(e), parent=self)
+            return
+        messagebox.showinfo(t.get("cust_title", "Customers"),
+                            t.get("wa_opened", "WhatsApp opened for {name}.").format(name=name),
+                            parent=self)
+
+    def estimate_fabric_for_selected(self):
+        """Fabric needed for the selected customer's measurements.
+
+        Wires up GarmentCalculator, which was already written and unused. The
+        garment comes from the customer's most recent order when there is
+        one, so the estimate matches what is actually being cut.
+        """
+        t = {**TRANSLATIONS["en"], **TRANSLATIONS.get(self.current_lang, {})}
+        cust = self._selected_customer()
+        if not cust:
+            return
+
+        def num(field):
+            try:
+                return float(clean_val(cust.get(field)) or 0)
+            except ValueError:
+                return 0.0
+
+        length, chest = num("length"), num("chest")
+        cid = clean_val(cust.get("id"))
+        garment = "Shalwar Kameez"
+        for o in self.orders:
+            if clean_val(o.get("customer_id")) == cid and clean_val(o.get("garment")):
+                garment = clean_val(o.get("garment"))
+        est = GarmentCalculator.estimate_fabric_meters(garment, length, chest)
+        messagebox.showinfo(
+            t.get("fabric_title", "Fabric Estimate"),
+            "%s\n\n%s: %s\n%s: %.2f m\n%s: %s\n\n%s" % (
+                clean_val(cust.get("name")),
+                t.get("tbl_garment", "Garment"), est["garment_type"],
+                t.get("fabric_meters", "Recommended"), est["recommended_meters"],
+                t.get("fabric_width", "Cloth width"), est["fabric_width_standard"],
+                est["notes"]),
+            parent=self)
+
+    def delete_selected_finance_row(self):
+        """Remove one line from the finance ledger.
+
+        Admin-gated and confirmed, like every other destructive action here,
+        and the confirmation says plainly that the order survives and the
+        line will return on the next sync -- otherwise "delete" reads as a
+        promise the ledger cannot keep.
+        """
+        t = {**TRANSLATIONS["en"], **TRANSLATIONS.get(self.current_lang, {})}
+        if self.current_user_role != "Administrator":
+            messagebox.showwarning(t.get("access_denied", "Access Denied"),
+                                   t.get("admin_only", "Administrator access required."),
+                                   parent=self)
+            return
+        sel = self.tree_finance.selection()
+        if not sel:
+            messagebox.showwarning(t.get("fin_title", "Finance"),
+                                   t.get("fin_del_none", "Select a finance row first."),
+                                   parent=self)
+            return
+        oid = self.tree_finance.set(sel[0], "order_id")
+        if not messagebox.askyesno(
+                t.get("fin_btn_delete", "Delete Record"),
+                t.get("fin_del_confirm", "Remove the finance record for {oid}?").format(oid=oid),
+                parent=self):
+            return
+        try:
+            self._finance_db_for_current_data().delete_row(oid)
+        except Exception as e:
+            messagebox.showerror(t.get("fin_title", "Finance"), str(e), parent=self)
+            return
+        # Repaint straight from the table rather than re-syncing, or the row
+        # would be written back before the user saw it go.
+        self._repaint_finance_table()
+        messagebox.showinfo(t.get("fin_title", "Finance"),
+                            t.get("fin_del_done", "Finance record removed for {oid}.").format(oid=oid),
+                            parent=self)
+
+    # ==========================================
+    # SYSTEM MONITOR (optional)
+    # ==========================================
+    def _build_system_monitor(self, parent):
+        """A compact machine-health strip at the foot of the sidebar.
+
+        Built every time the layout is, but only *packed* when the feature is
+        on -- so switching it off costs nothing at all, not even a hidden
+        widget being refreshed.
+        """
+        self.sysmon_frame = tk.Frame(parent, bg=self.colors["bg_sidebar"])
+        inner = tk.Frame(self.sysmon_frame, bg=self.colors["bg_sidebar"])
+        inner.pack(fill=tk.X, padx=12, pady=(0, 4))
+
+        # A hairline rather than a "MACHINE" caption: the sidebar's vertical
+        # budget is tight with nine nav items, the owner block, the chips and
+        # the clock, and a text header cost more height than the readout had
+        # to spare -- the GPU row was being clipped off the bottom. The five
+        # rows name themselves anyway.
+        tk.Frame(inner, bg=self.colors["border"], height=1).pack(
+            fill=tk.X, pady=(0, 4))
+
+        self.sysmon_rows = {}
+        for key in ("internet", "cpu", "memory", "disk", "gpu"):
+            row = tk.Frame(inner, bg=self.colors["bg_sidebar"])
+            row.pack(fill=tk.X)
+            cap = tk.Label(row, text="", bg=self.colors["bg_sidebar"],
+                           fg=self.colors["text_3"], font=(FONT_FAMILY, 7))
+            cap.pack(side=self._side(tk.LEFT))
+            val = tk.Label(row, text="—", bg=self.colors["bg_sidebar"],
+                           fg=self.colors["text_muted"], font=(FONT_FAMILY, 7, "bold"))
+            val.pack(side=self._side(tk.RIGHT))
+            self.sysmon_rows[key] = (cap, val)
+        self._label_system_monitor()
+        return self.sysmon_frame
+
+    def _label_system_monitor(self):
+        t = {**TRANSLATIONS["en"], **TRANSLATIONS.get(self.current_lang, {})}
+        if not hasattr(self, "sysmon_rows"):
+            return
+        caps = {"internet": t.get("sys_internet", "Internet"),
+                "cpu": t.get("sys_cpu", "CPU"),
+                "memory": t.get("sys_ram", "RAM"),
+                "disk": t.get("sys_disk", "Disk"),
+                "gpu": t.get("sys_gpu", "GPU")}
+        for key, (cap, _val) in self.sysmon_rows.items():
+            cap.configure(text=caps[key])
+
+
+    def _apply_system_monitor_visibility(self):
+        """Pack or forget the strip, and start/stop its polling with it.
+
+        Re-packing lands it at the end of the sidebar's BOTTOM list, which
+        puts it directly above the quick-control chips -- the same place it
+        occupies when the app starts with the feature already on.
+        """
+        frame = getattr(self, "sysmon_frame", None)
+        if frame is None or not frame.winfo_exists():
+            return
+        if self.system_monitor_enabled:
+            frame.pack(side=tk.BOTTOM, fill=tk.X)
+            self._start_system_monitor()
+        else:
+            frame.pack_forget()
+            self._stop_system_monitor()
+
+    def _start_system_monitor(self):
+        if self._sysmon_job is not None:
+            return
+        self._poll_system_monitor()
+
+    def _stop_system_monitor(self):
+        if self._sysmon_job is not None:
+            try:
+                self.after_cancel(self._sysmon_job)
+            except Exception:
+                pass
+            self._sysmon_job = None
+
+    def _poll_system_monitor(self):
+        """Paint the last reading, then start the next one off-thread.
+
+        The probe cannot run on the Tk thread: the first snapshot costs
+        nearly a second because it forks nvidia-smi, and that would freeze
+        the clock. But the worker must not touch Tk either -- Tkinter is not
+        thread-safe, and calling self.after() from the worker silently failed
+        to deliver, leaving every row reading "—".
+
+        So nothing crosses the boundary except a plain dict: the worker only
+        assigns to self._sysmon_latest, and this method -- always on the main
+        thread -- is the only thing that reads it and touches a widget. One
+        tick's latency before the first reading appears is the whole cost.
+        """
+        self._sysmon_job = None
+        if not self.system_monitor_enabled:
+            return
+
+        snap = self._sysmon_latest
+        if snap:
+            self._paint_system_monitor(snap)
+
+        def work():
+            try:
+                self._sysmon_latest = sysmon.snapshot()
+            except Exception:
+                pass
+
+        try:
+            self._sysmon_pool.submit(work)
+        except Exception:
+            # Pool already shut down (app closing): skip this round rather
+            # than run a second-long probe on the main thread.
+            pass
+        # Polling is cheap because every probe in system_monitor is memoized;
+        # most ticks just re-read a cached value.
+        self._sysmon_job = self.after(2000, self._poll_system_monitor)
+
+    def _paint_system_monitor(self, snap):
+        if not snap or not hasattr(self, "sysmon_rows"):
+            return
+        if not self.sysmon_frame.winfo_exists():
+            return
+        t = {**TRANSLATIONS["en"], **TRANSLATIONS.get(self.current_lang, {})}
+
+        def put(key, text, color=None):
+            _cap, val = self.sysmon_rows[key]
+            if val.winfo_exists():
+                val.configure(text=text, fg=color or self.colors["text_muted"])
+
+        online = snap.get("internet")
+        put("internet",
+            t.get("sys_online", "Online") if online else t.get("sys_offline", "Offline"),
+            SAGE if online else TERRACOTTA)
+
+        cpu = snap.get("cpu")
+        put("cpu", "—" if cpu is None else "%d%%" % round(cpu),
+            None if cpu is None else self._load_color(cpu))
+
+        mem = snap.get("memory")
+        if mem is None:
+            put("memory", "—")
+        else:
+            used, total, pct = mem
+            put("memory", "%.1f/%.0f GB" % (used, total), self._load_color(pct))
+
+        disk = snap.get("disk")
+        if disk is None:
+            put("disk", "—")
+        else:
+            used, total, pct = disk
+            put("disk", "%d%% full" % round(pct), self._load_color(pct))
+
+        gpu = snap.get("gpu")
+        put("gpu", "—" if not gpu else "%d%%" % round(gpu.get("load", 0)),
+            None if not gpu else self._load_color(gpu.get("load", 0)))
+
+    def _load_color(self, pct):
+        """Green under load, amber when it starts to matter, red when it is
+        the reason the till feels slow."""
+        if pct >= 90:
+            return TERRACOTTA
+        if pct >= 70:
+            return GAUGE_PROGRESS
+        return self.colors["text_muted"]
+
+    # ==========================================
+    # COMMAND BAR (optional)
+    # ==========================================
+    def toggle_command_bar(self, event=None):
+        if not self.ai_panel_enabled:
+            return "break"
+        if self._cmdbar is not None and self._cmdbar.winfo_exists():
+            self.close_command_bar()
+        else:
+            self.open_command_bar()
+        return "break"
+
+    def close_command_bar(self, event=None):
+        bar = self._cmdbar
+        self._cmdbar = None
+        if bar is not None and bar.winfo_exists():
+            bar.destroy()
+        return "break"
+
+    def open_command_bar(self):
+        """The slide-up strip along the bottom of the window.
+
+        Placed with place() rather than packed: it has to sit *over* the
+        page, and packing it would shove every section up by its height each
+        time it opened.
+        """
+        if not self.ai_panel_enabled:
+            return None
+        if self._cmdbar is not None and self._cmdbar.winfo_exists():
+            return self._cmdbar
+        t = {**TRANSLATIONS["en"], **TRANSLATIONS.get(self.current_lang, {})}
+
+        bar = tk.Frame(self, bg=self.colors["bg_card"],
+                       highlightbackground=self.colors["border"],
+                       highlightthickness=1)
+        bar.place(relx=0.5, rely=1.0, anchor="s", relwidth=0.72, height=92)
+        self._cmdbar = bar
+
+        strip = tk.Frame(bar, height=3, bg=self.colors["bg_card"])
+        strip.pack(side=tk.TOP, fill=tk.X)
+        for color in ACCENT_STRIP:
+            tk.Frame(strip, bg=color, height=3).pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        row = tk.Frame(bar, bg=self.colors["bg_card"])
+        row.pack(fill=tk.X, padx=14, pady=(10, 2))
+        tk.Label(row, text="🤖", bg=self.colors["bg_card"],
+                 font=(FONT_FAMILY, 11)).pack(side=self._side(tk.LEFT), padx=(0, 8))
+        self.ent_command = tk.Entry(row, font=(FONT_FAMILY, 11),
+                                    bg=self.colors["well"], fg=self.colors["text_main"],
+                                    insertbackground=self.colors["text_main"],
+                                    relief="flat", bd=7)
+        self.ent_command.pack(side=self._side(tk.LEFT), fill=tk.X, expand=True)
+        self.ent_command.bind("<Return>", lambda e: self.run_command(self.ent_command.get()))
+        self.ent_command.focus_set()
+
+        self.lbl_command_hint = tk.Label(
+            bar, text=t.get("cmd_hint", "Try: dashboard · customers · finance · "
+                            "inventory · dark mode · urdu"),
+            font=(FONT_FAMILY, 8), bg=self.colors["bg_card"],
+            fg=self.colors["text_3"])
+        self.lbl_command_hint.pack(anchor=self._anchor("w"), padx=46, pady=(0, 8))
+
+        bar.bind("<Escape>", self.close_command_bar)
+        self.ent_command.bind("<Escape>", self.close_command_bar)
+        return bar
+
+    def _command_routes(self):
+        """Phrase fragments -> what to do. Built fresh so it picks up the
+        active language: an Urdu user should be able to type Urdu."""
+        t = {**TRANSLATIONS["en"], **TRANSLATIONS.get(self.current_lang, {})}
+        routes = []
+        for key, section in (("nav_dash", "dashboard"), ("nav_cust", "customer"),
+                             ("nav_order_card", "order_card"), ("nav_calendar", "calendar"),
+                             ("nav_emp", "employee"), ("nav_inventory", "inventory"),
+                             ("nav_finance", "finance"), ("nav_expenses", "expenses"),
+                             ("nav_admin", "admin")):
+            # Nav labels carry a leading emoji; match on the words only.
+            label = "".join(ch for ch in t.get(key, "") if ch.isalnum() or ch.isspace())
+            for word in label.strip().lower().split():
+                if len(word) > 2:
+                    routes.append((word, ("section", section)))
+        routes += [
+            ("dashboard", ("section", "dashboard")), ("home", ("section", "dashboard")),
+            ("customer", ("section", "customer")), ("client", ("section", "customer")),
+            ("order", ("section", "order_card")), ("new order", ("section", "order_card")),
+            ("calendar", ("section", "calendar")), ("schedule", ("section", "calendar")),
+            ("staff", ("section", "employee")), ("tailor", ("section", "employee")),
+            ("employee", ("section", "employee")),
+            ("stock", ("section", "inventory")), ("inventory", ("section", "inventory")),
+            ("fabric", ("section", "inventory")),
+            ("finance", ("section", "finance")), ("money", ("section", "finance")),
+            ("payment", ("section", "finance")), ("expense", ("section", "expenses")),
+            ("setting", ("section", "admin")), ("config", ("section", "admin")),
+            ("dark", ("theme", "dark")), ("night", ("theme", "dark")),
+            ("light", ("theme", "light")), ("day", ("theme", "light")),
+            ("english", ("lang", "en")), ("urdu", ("lang", "ur")),
+            ("pashto", ("lang", "ps")),
+            ("full screen", ("display", "fullscreen")),
+            ("fullscreen", ("display", "fullscreen")),
+            ("window", ("display", "windowed")),
+        ]
+        return routes
+
+    def run_command(self, phrase):
+        """Route a typed phrase. Returns the action taken, or None.
+
+        Matching is local and offline first -- a shop counter should not need
+        a network round trip to open the Finance tab. The configured API is
+        only consulted for a phrase nothing here recognises, and its absence
+        is not an error.
+        """
+        text = (phrase or "").strip().lower()
+        if not text:
+            return None
+        action = None
+        best = 0
+        for needle, act in self._command_routes():
+            if needle in text and len(needle) > best:
+                action, best = act, len(needle)
+
+        if action is None:
+            action = self._ask_command_api(text)
+        if action is None:
+            t = {**TRANSLATIONS["en"], **TRANSLATIONS.get(self.current_lang, {})}
+            if hasattr(self, "lbl_command_hint") and self.lbl_command_hint.winfo_exists():
+                self.lbl_command_hint.configure(
+                    text=t.get("cmd_unknown", "Not understood. Try a section name."),
+                    fg=TERRACOTTA)
+            return None
+
+        kind, value = action
+        if kind == "section":
+            self.show_section(value)
+        elif kind == "theme":
+            self.set_theme(value)
+        elif kind == "lang":
+            self.set_language(value)
+        elif kind == "display":
+            self.apply_display_mode(value)
+        # set_theme/set_language rebuild the body, which destroys the bar.
+        if kind in ("theme", "lang"):
+            self._cmdbar = None
+        else:
+            self.close_command_bar()
+        return action
+
+    def _ask_command_api(self, text):
+        """Ask the configured endpoint to name a section. Best-effort: any
+        failure just means the phrase was not understood."""
+        saved = self._app_state_for_current_data().load()
+        url = (saved.get("api_url") or "").strip()
+        if not url:
+            return None
+        try:
+            import json
+            import urllib.request
+            payload = json.dumps({"query": text,
+                                  "sections": list(self.sections.keys())}).encode("utf-8")
+            req = urllib.request.Request(url, data=payload,
+                                         headers={"Content-Type": "application/json"})
+            key = (saved.get("api_key") or "").strip()
+            if key:
+                req.add_header("Authorization", "Bearer " + key)
+            with urllib.request.urlopen(req, timeout=6) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            target = str(data.get("section", "")).strip()
+            if target in self.sections:
+                return ("section", target)
+        except Exception as e:
+            print("[CommandBar] API lookup failed: %s" % e)
+        return None
+
+    # ==========================================
+    # SECURITY / OPTIONAL FEATURES
+    # ==========================================
+    def _refresh_password_hint(self):
+        """Say plainly when the install is still on the shipped password."""
+        if not hasattr(self, "lbl_pw_hint"):
+            return
+        t = {**TRANSLATIONS["en"], **TRANSLATIONS.get(self.current_lang, {})}
+        stored = self._app_state_for_current_data().load().get("admin_password_hash", "")
+        if pw_store.is_factory_default(stored):
+            self.lbl_pw_hint.configure(
+                text=t.get("pw_hint_default", "Still using the default password."),
+                fg=TERRACOTTA)
+        else:
+            self.lbl_pw_hint.configure(
+                text=t.get("pw_hint_set", "A custom password is set."),
+                fg=self.colors["text_3"])
+
+    def _modal_shell(self, title, geometry):
+        """A Toplevel dressed like the rest of the app. grab_set() can fail on
+        a window that is not mapped yet (it does in the headless smoke run),
+        and that must not stop the dialog opening."""
+        dlg = tk.Toplevel(self)
+        dlg.title(title)
+        dlg.geometry(geometry)
+        dlg.configure(bg=self.colors["bg_card"])
+        dlg.transient(self)
+        try:
+            dlg.grab_set()
+        except tk.TclError:
+            pass
+        icon = self.assets.window_icon() if hasattr(self, "assets") else None
+        if icon is not None:
+            try:
+                dlg.iconphoto(False, icon)
+                dlg._icon_ref = icon
+            except tk.TclError:
+                pass
+        return dlg
+
+    def _labelled_entry(self, parent, label, show=None, initial=""):
+        tk.Label(parent, text=label, font=(FONT_FAMILY, 8, "bold"),
+                 bg=self.colors["bg_card"], fg=self.colors["text_muted"]).pack(
+            anchor=self._anchor("w"), pady=(6, 1))
+        kw = {"show": show} if show else {}
+        e = tk.Entry(parent, font=(FONT_FAMILY, 10), bg=self.colors["well"],
+                     fg=self.colors["text_main"],
+                     insertbackground=self.colors["text_main"],
+                     relief="flat", bd=6, **kw)
+        if initial:
+            e.insert(0, initial)
+        e.pack(fill=tk.X)
+        return e
+
+    def _modal_buttons(self, dlg, save_text, on_save):
+        t = {**TRANSLATIONS["en"], **TRANSLATIONS.get(self.current_lang, {})}
+        btns = tk.Frame(dlg, bg=self.colors["bg_card"])
+        btns.pack(fill=tk.X, padx=20, pady=14, side=tk.BOTTOM)
+        tk.Button(btns, text=t.get("btn_cancel", "Cancel"), command=dlg.destroy,
+                  bg=self.colors["well"], fg=self.colors["text_muted"],
+                  font=(FONT_FAMILY, 8, "bold"), bd=0, padx=12, pady=5,
+                  cursor="hand2").pack(side=self._side(tk.RIGHT))
+        tk.Button(btns, text=save_text, command=on_save, bg=PRIMARY, fg="#F1F1F0",
+                  font=(FONT_FAMILY, 8, "bold"), bd=0, padx=12, pady=5,
+                  cursor="hand2", activebackground=PRIMARY,
+                  activeforeground="#F1F1F0").pack(side=self._side(tk.RIGHT), padx=(0, 8))
+        dlg.bind("<Escape>", lambda e: dlg.destroy())
+
+    def open_change_password_modal(self):
+        t = {**TRANSLATIONS["en"], **TRANSLATIONS.get(self.current_lang, {})}
+        title = t.get("pw_title", "Change Admin Password")
+        dlg = self._modal_shell(title, "380x310")
+
+        tk.Label(dlg, text=title, font=(FONT_FAMILY, 12, "bold"),
+                 bg=self.colors["bg_card"], fg=self.colors["text_main"]).pack(
+            anchor=self._anchor("w"), padx=20, pady=(18, 2))
+        tk.Label(dlg, text=t.get("pw_sub", "Used to unlock the app at startup."),
+                 font=(FONT_FAMILY, 8), bg=self.colors["bg_card"],
+                 fg=self.colors["text_muted"]).pack(
+            anchor=self._anchor("w"), padx=20, pady=(0, 10))
+
+        body = tk.Frame(dlg, bg=self.colors["bg_card"])
+        body.pack(fill=tk.X, padx=20)
+        e_cur = self._labelled_entry(body, t.get("pw_current", "Current password"), show="*")
+        e_new = self._labelled_entry(body, t.get("pw_new", "New password"), show="*")
+        e_con = self._labelled_entry(body, t.get("pw_confirm", "Confirm new password"), show="*")
+        e_cur.focus_set()
+
+        msg = tk.Label(dlg, text="", font=(FONT_FAMILY, 8), bg=self.colors["bg_card"],
+                       fg=TERRACOTTA, wraplength=330, justify=self._justify("left"))
+        msg.pack(anchor=self._anchor("w"), padx=20, pady=(8, 0))
+
+        def save():
+            state = self._app_state_for_current_data()
+            stored = state.load().get("admin_password_hash", "")
+            if not pw_store.verify(e_cur.get(), stored):
+                msg.configure(text=t.get("pw_err_current", "Current password is incorrect."))
+                e_cur.delete(0, tk.END)
+                return
+            ok, err = pw_store.validate_new(e_new.get(), e_con.get())
+            if not ok:
+                msg.configure(text=t.get(err, err))
+                return
+            state.save(admin_password_hash=pw_store.hash_password(e_new.get()))
+            dlg.destroy()
+            self._refresh_password_hint()
+            messagebox.showinfo(title, t.get("pw_done", "Password updated."), parent=self)
+
+        self._modal_buttons(dlg, t.get("pw_save", "Update Password"), save)
+        dlg.bind("<Return>", lambda e: save())
+        self.dlg_change_pw = dlg
+        return dlg
+
+    def on_system_monitor_toggle(self):
+        self.system_monitor_enabled = bool(self.var_system_monitor.get())
+        self._app_state_for_current_data().save(system_monitor=self.system_monitor_enabled)
+        self._apply_system_monitor_visibility()
+
+    def on_ai_panel_toggle(self):
+        self.ai_panel_enabled = bool(self.var_ai_panel.get())
+        self._app_state_for_current_data().save(ai_panel=self.ai_panel_enabled)
+        if not self.ai_panel_enabled:
+            self.close_command_bar()
+
+    def open_api_settings_modal(self):
+        """Endpoint the command bar falls back to for phrases it cannot route
+        on its own. Entirely optional -- the bar works offline without it."""
+        t = {**TRANSLATIONS["en"], **TRANSLATIONS.get(self.current_lang, {})}
+        state = self._app_state_for_current_data()
+        saved = state.load()
+        title = t.get("api_title", "Custom API")
+        dlg = self._modal_shell(title, "440x300")
+
+        tk.Label(dlg, text=title, font=(FONT_FAMILY, 12, "bold"),
+                 bg=self.colors["bg_card"], fg=self.colors["text_main"]).pack(
+            anchor=self._anchor("w"), padx=20, pady=(18, 2))
+        tk.Label(dlg, text=t.get("api_sub", "Optional. The command bar asks this "
+                                 "endpoint only when it cannot route a phrase itself."),
+                 font=(FONT_FAMILY, 8), bg=self.colors["bg_card"],
+                 fg=self.colors["text_muted"], wraplength=390,
+                 justify=self._justify("left")).pack(
+            anchor=self._anchor("w"), padx=20, pady=(0, 10))
+
+        body = tk.Frame(dlg, bg=self.colors["bg_card"])
+        body.pack(fill=tk.X, padx=20)
+        e_url = self._labelled_entry(body, t.get("api_url", "Endpoint URL"),
+                                     initial=saved.get("api_url", ""))
+        e_key = self._labelled_entry(body, t.get("api_key", "API key"), show="*",
+                                     initial=saved.get("api_key", ""))
+
+        tk.Label(dlg, text=t.get("api_warn", "Stored in plain text on this PC with "
+                                 "the other preferences. Do not put a shared "
+                                 "credential here."),
+                 font=(FONT_FAMILY, 8), bg=self.colors["bg_card"], fg=TERRACOTTA,
+                 wraplength=390, justify=self._justify("left")).pack(
+            anchor=self._anchor("w"), padx=20, pady=(10, 0))
+
+        def save():
+            state.save(api_url=e_url.get().strip(), api_key=e_key.get().strip())
+            dlg.destroy()
+
+        self._modal_buttons(dlg, t.get("btn_save", "Save"), save)
+        self.dlg_api = dlg
+        return dlg
+
     # ==========================================
     # LANGUAGE ENGINE
     # ==========================================
@@ -3291,6 +4120,32 @@ class AtelierERPApp(tk.Tk):
         if hasattr(self, "btn_mark_ready"):
             self.btn_mark_ready.configure(
                 text=t.get("btn_mark_ready", "✔ Mark Ready"))
+        self._label_system_monitor()
+
+        # The three cards added for the optional features. Their widgets are
+        # constructed with English text like everything else here, so they
+        # have to be re-labelled on every language pass or they stay English
+        # under an otherwise fully translated page.
+        if hasattr(self, "lbl_pw_label"):
+            self.lbl_pw_label.configure(text=t.get("pw_label", "\U0001F512 Admin Password"))
+            self.btn_change_pw.configure(text=t.get("pw_btn", "Change Password\u2026"))
+            self._refresh_password_hint()
+        if hasattr(self, "lbl_mon_label"):
+            self.lbl_mon_label.configure(text=t.get("mon_label", "\U0001F4C8 System Monitor"))
+            self.chk_system_monitor.configure(text=t.get("mon_toggle", "Show machine health"))
+            self.lbl_mon_hint.configure(text=t.get("mon_hint", "Internet \u00b7 CPU \u00b7 RAM \u00b7 Disk \u00b7 GPU"))
+        if hasattr(self, "lbl_ai_label"):
+            self.lbl_ai_label.configure(text=t.get("ai_label", "\U0001F916 Command Bar"))
+            self.chk_ai_panel.configure(text=t.get("ai_toggle", "Enable command bar"))
+            self.btn_api_settings.configure(text=t.get("api_btn", "Custom API\u2026"))
+            self.lbl_ai_hint.configure(text=t.get("ai_hint", "Ctrl+K opens it"))
+        if hasattr(self, "btn_fin_delete"):
+            self.btn_fin_delete.configure(text=t.get("fin_btn_delete", "\U0001F5D1 Delete Record"))
+        if hasattr(self, "btn_cust_whatsapp"):
+            self.btn_cust_whatsapp.configure(text=t.get("btn_whatsapp", "\U0001F4AC WhatsApp"))
+            self.btn_cust_fabric.configure(text=t.get("fabric_btn", "\U0001F9F5 Fabric Estimate"))
+        if hasattr(self, "lbl_command_hint") and self.lbl_command_hint.winfo_exists():
+            self.lbl_command_hint.configure(text=t.get("cmd_hint", ""))
 
         # Calendar: header, Today button and the three workload captions.
         # refresh_calendar_ui() re-reads the pack itself, so it repaints the

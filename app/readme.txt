@@ -16,6 +16,12 @@ Key Features:
 - Brand imagery from app/Images: the shop sign as the window icon and sidebar logo, the owner photo as the login backdrop, sidebar background and page watermark.
 - Right-to-left layout for Urdu and Pashto: the sidebar moves to the right edge, headings, tables and typed text read from the right. English and the other packs are unchanged.
 - Theme and language chips at the foot of the sidebar, plus Ctrl+T (theme) and Ctrl+G (language).
+- Optional system monitor in the sidebar: internet, CPU, RAM, disk and GPU. Off unless enabled in Settings.
+- Admin password can be changed in Settings; it is stored as a bcrypt hash, and an install that never changed it still accepts the shipped default.
+- Optional command bar (Ctrl+K): type a section, theme or language. Routes offline; a custom API endpoint is used only for phrases it cannot place.
+- Finance: delete a single ledger row (administrator only). The order is not deleted and the row returns on the next sync.
+- Stat and money cards are clickable and open the page they summarise.
+- Customers: WhatsApp message draft and fabric estimate, both from services already present in the codebase.
 - Opens full screen by default; switch to windowed in Settings (F11 toggles, Esc exits). The choice is remembered.
 - Customer hub with contact details, address, and measurement cards.
 - Staff and task allocation for tailors and shop workers, linked to real orders.

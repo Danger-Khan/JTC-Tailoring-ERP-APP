@@ -1,5 +1,17 @@
 import urllib.parse
-from app.utils.logger import log_event
+
+# The audit logger reaches for `config`, which resolves to a different module
+# (and a different data directory) depending on how the process was started.
+# The desktop app must not drag that in just to build a WhatsApp link, so a
+# missing logger degrades to a no-op rather than failing the import.
+try:
+    from app.utils.logger import log_event
+except Exception:  # pragma: no cover - depends on entry point
+    try:
+        from utils.logger import log_event
+    except Exception:
+        def log_event(event_type, message, user="System"):
+            return None
 
 class NotificationService:
     """Handles generation of customer notifications via WhatsApp API links or SMS standard formatting."""
@@ -19,7 +31,7 @@ class NotificationService:
     def send_order_confirmation(cls, customer_name: str, phone: str, invoice_no: str, amount: float, balance: float) -> dict:
         msg = (
             f"Dear {customer_name},\n"
-            f"Thank you for choosing our Atelier! Your order #{invoice_no} has been confirmed.\n"
+            f"Thank you for choosing Jhagra Creation & Fabrics! Your order #{invoice_no} has been confirmed.\n"
             f"Total Amount: PKR {amount:.2f}\n"
             f"Remaining Balance: PKR {balance:.2f}\n"
             f"We will notify you when your order is ready for fitting."
@@ -32,7 +44,7 @@ class NotificationService:
     def send_order_ready_notice(cls, customer_name: str, phone: str, invoice_no: str, balance: float) -> dict:
         msg = (
             f"Dear {customer_name},\n"
-            f"Great news! Your suit (Order #{invoice_no}) is now READY for pickup!\n"
+            f"Great news! Your order (#{invoice_no}) is now READY for pickup!\n"
             f"Remaining Balance Due: PKR {balance:.2f}\n"
             f"Please visit our shop during operating hours."
         )

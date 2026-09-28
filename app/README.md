@@ -16,6 +16,12 @@ This desktop app uses a **neumorphic (soft UI)** design system ported from the J
 * **📦 Inventory**: fabric and trim stock in its own sheet, with a summary strip (items tracked / total units / low stock / out of stock), stock-in and stock-out adjustments, and low/empty rows tinted in the table.
 * **Right-to-left Urdu**: picking Urdu or Pashto mirrors the whole layout, not just the wording — sidebar on the right, headings and tables reading from the right, right-aligned input. English is untouched.
 * **Quick theme & language**: chips at the foot of the sidebar flip light/dark and switch language without a trip to Settings (Ctrl+T and Ctrl+G do the same).
+* **Optional machine monitor**: internet, CPU, RAM, disk and GPU at the foot of the sidebar. Off by default; switch it on in Settings.
+* **Admin password**: set your own in Settings, stored as a bcrypt hash. An install that has never changed it keeps accepting the shipped default.
+* **Command bar (Ctrl+K)**: optional slide-up strip. Type `finance`, `stock`, `dark mode`, `urdu` — it routes offline, in whichever language is active. A custom API endpoint can be configured for phrases it does not know.
+* **Finance delete**: remove a ledger line (admin only). The order itself is untouched, and the line returns on the next sync.
+* **Cards are links**: every stat tile and money card opens the page it summarises.
+* **WhatsApp & fabric estimate** on Customers, from services that were already in the codebase.
 * **Full screen by default**: the app opens fullscreen for counter use; switch to windowed in Settings, or press F11 to toggle and Esc to leave fullscreen. The choice is remembered.
 * **Visual Analytics Dashboard**:
   * Three donut gauges for **Work Done**, **In Progress**, and **Work Remaining**, sharing one card with the reading printed inside each ring.
