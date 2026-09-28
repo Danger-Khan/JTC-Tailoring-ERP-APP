@@ -238,6 +238,169 @@ def run_gui_smoke_test():
         app.update()
         check("english nav restored", "Dashboard" in app.nav_buttons["dashboard"][0].cget("text"))
 
+        # --- Right-to-left layout (Urdu / Pashto) ---
+        check("english is left-to-right", not app.is_rtl)
+        check("mirror helpers are no-ops in LTR",
+              app._side(gui.tk.LEFT) == gui.tk.LEFT and app._anchor("w") == "w"
+              and app._justify("left") == "left" and app._pad((0, 16)) == (0, 16)
+              and app._columns(("a", "b")) == ("a", "b"))
+
+        def body_x():
+            """(sidebar x, content x) -- the sidebar is the first child."""
+            kids = app.body_container.winfo_children()
+            return kids[0].winfo_x(), kids[1].winfo_x()
+
+        app.update_idletasks()
+        ltr_sidebar_x, ltr_content_x = body_x()
+        check("LTR puts the sidebar on the left",
+              ltr_sidebar_x < ltr_content_x and ltr_sidebar_x == 0)
+
+        app.set_language("ur")
+        app.update()
+        app.update_idletasks()
+        check("urdu is right-to-left", app.is_rtl and "ur" in gui.RTL_LANGS)
+        check("mirror helpers flip in RTL",
+              app._side(gui.tk.LEFT) == gui.tk.RIGHT
+              and app._anchor("w") == "e" and app._anchor("nw") == "ne"
+              and app._anchor("center") == "center"   # not "cwntwr"
+              and app._justify("left") == "right" and app._pad((0, 16)) == (16, 0)
+              and app._columns(("a", "b")) == ("b", "a"))
+        rtl_sidebar_x, rtl_content_x = body_x()
+        check("RTL moves the sidebar to the right",
+              rtl_sidebar_x > rtl_content_x and rtl_content_x == 0)
+        check("RTL anchors nav text to the right edge",
+              app.nav_buttons["dashboard"][0].cget("anchor") == "e")
+        check("RTL right-aligns typed text",
+              gui.tk.Entry(app).cget("justify") == "right"
+              and app.style.lookup("TCombobox", "justify") == "right")
+
+        # Columns must *display* reversed while every insert(values=...) keeps
+        # landing under the right heading -- the reason this uses
+        # displaycolumns instead of reordering `columns`.
+        check("RTL reverses table column order",
+              tuple(app.tree_customers.cget("displaycolumns"))
+              == tuple(reversed(tuple(app.cust_headers))))
+        probe = app.tree_customers.insert(
+            "", "end", values=tuple("v_" + c for c in app.cust_headers))
+        check("RTL keeps every cell under its own heading",
+              all(app.tree_customers.set(probe, c) == "v_" + c
+                  for c in app.cust_headers))
+        app.tree_customers.delete(probe)
+
+        # A theme change rebuilds every widget; it used to rebuild them with
+        # their English construction-time text while current_lang said "ur".
+        app.cbo_theme.set("Dark Mode ☾")
+        app.change_theme()
+        app.update()
+        check("theme change keeps the active language",
+              app.current_lang == "ur"
+              and "ڈیش بورڈ" in app.nav_buttons["dashboard"][0].cget("text"))
+        check("theme change keeps the RTL layout", app.is_rtl and body_x()[0] > body_x()[1])
+        app.toggle_theme()
+        app.update()
+        check("toggle_theme flips back", app.current_theme == "light")
+
+        check("pashto is right-to-left too", "ps" in gui.RTL_LANGS)
+        app.set_language("en")
+        app.update()
+        app.update_idletasks()
+        check("returning to english restores LTR",
+              not app.is_rtl and body_x() == (ltr_sidebar_x, ltr_content_x)
+              and tuple(app.tree_customers.cget("displaycolumns"))
+              == tuple(app.cust_headers))
+
+        # --- Calendar mirrors and translates ---
+        app.set_language("ur")
+        app.show_section("calendar")
+        app.update()
+        app.update_idletasks()
+        check("calendar header is translated",
+              app.lbl_cal_title.cget("text") == gui.TRANSLATIONS["ur"]["cal_title"])
+        check("calendar month name comes from the pack (not the C locale)",
+              any(m in app.lbl_cal_month.cget("text").replace(" ", "")
+                  for m in gui.TRANSLATIONS["ur"]["cal_months"]))
+        # The week itself has to run the other way, not just its labels.
+        heads = {}
+        for w in app.cal_grid.winfo_children():
+            info = w.grid_info()
+            if str(info.get("row")) == "0":
+                heads[int(info["column"])] = w.cget("text").replace(" ", "")
+        ur_days = gui.TRANSLATIONS["ur"]["cal_days"]
+        check("calendar weekday row is translated",
+              ur_days[0] in "".join(heads.values()))
+        check("RTL puts Monday in the rightmost column",
+              heads.get(6) == ur_days[0] and heads.get(0) == ur_days[6])
+        check("calendar grid column mirror is a no-op check",
+              app._grid_col(0) == 6 and app._grid_col(6) == 0)
+        app.set_language("en")
+        app.update()
+        app.update_idletasks()
+        heads_en = {}
+        for w in app.cal_grid.winfo_children():
+            info = w.grid_info()
+            if str(info.get("row")) == "0":
+                heads_en[int(info["column"])] = w.cget("text").replace(" ", "")
+        # _track() uppercases as well as letter-spacing, so compare case-folded.
+        check("LTR puts Monday back in the leftmost column",
+              heads_en.get(0, "").lower() == "mon"
+              and heads_en.get(6, "").lower() == "sun"
+              and app._grid_col(0) == 0)
+
+        # --- Settings page controls are actually on screen ---
+        # These three cards were packed fill=BOTH inside a row that does not
+        # expand, so _rounded_surface never sized them and all three collapsed
+        # to a 1px sliver: the theme and language controls existed but could
+        # not be seen or clicked.
+        app.show_section("admin")
+        app.update()
+        app.update_idletasks()
+        for name, widget in (("theme", app.cbo_theme), ("display", app.cbo_display),
+                             ("language", app.cbo_lang)):
+            check("settings %s control is visible" % name,
+                  widget.winfo_ismapped() and widget.winfo_height() > 10)
+        check("settings cards have real height",
+              app.cbo_theme.master.winfo_height() > 40)
+
+        # --- Display mode + theme wording follows the language ---
+        app.set_language("ur")
+        app.update()
+        check("display mode card is translated",
+              app.lbl_display_label.cget("text") != "🖥️ Display Mode"
+              and "ڈسپلے" in app.lbl_display_label.cget("text"))
+        check("display mode values are translated",
+              app.cbo_display.get() == app._display_mode_label(app.display_mode)
+              and "Windowed" not in app.cbo_display.get())
+        check("theme values are translated",
+              app.cbo_theme.get() == app._theme_label(app.current_theme)
+              and "Mode" not in app.cbo_theme.get())
+        # The handlers used to match on the English substrings "Full"/"Dark",
+        # which appear in none of the translated values.
+        app.cbo_display.set(app._display_mode_label("windowed"))
+        app.on_display_mode_change()
+        check("translated display selection still applies",
+              app.display_mode == "windowed")
+        app.cbo_theme.set(app._theme_label("dark"))
+        app.change_theme()
+        app.update()
+        check("translated theme selection still applies", app.current_theme == "dark")
+        app.toggle_theme()
+        app.update()
+        app.set_language("en")
+        app.update()
+
+        # --- Sidebar quick controls ---
+        check("sidebar has a theme chip",
+              hasattr(app, "btn_quick_theme") and app.btn_quick_theme.winfo_exists())
+        check("sidebar has a language chip",
+              hasattr(app, "btn_quick_lang")
+              and "EN" in app.btn_quick_lang.cget("text"))
+        app.cycle_language()
+        app.update()
+        check("cycle_language steps to the next pack", app.current_lang == "ur")
+        check("language chip follows the pack", "UR" in app.btn_quick_lang.cget("text"))
+        app.set_language("en")
+        app.update()
+
         # --- Modals open without error (grab may fail on unmapped windows; tolerated) ---
         def open_and_destroy(method, name):
             try:

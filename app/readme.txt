@@ -14,6 +14,8 @@ Key Features:
 - Production calendar: a month grid of deliveries due by day, with due-this-month, due-in-7-days and overdue counts.
 - Inventory: fabric and trim stock in inventory.xlsx, with a summary strip (items tracked, total units, low stock, out of stock) and stock-in/stock-out adjustments.
 - Brand imagery from app/Images: the shop sign as the window icon and sidebar logo, the owner photo as the login backdrop, sidebar background and page watermark.
+- Right-to-left layout for Urdu and Pashto: the sidebar moves to the right edge, headings, tables and typed text read from the right. English and the other packs are unchanged.
+- Theme and language chips at the foot of the sidebar, plus Ctrl+T (theme) and Ctrl+G (language).
 - Opens full screen by default; switch to windowed in Settings (F11 toggles, Esc exits). The choice is remembered.
 - Customer hub with contact details, address, and measurement cards.
 - Staff and task allocation for tailors and shop workers, linked to real orders.

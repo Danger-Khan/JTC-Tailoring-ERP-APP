@@ -1,0 +1,8 @@
+if possible also add the computer checking service like it will check if there is internet or not.
+the ram and cpu and gpu etc.
+make it so its optional and can be turn off or on by settings per user need.
+also add password change option in settings.
+with that also add an api section where custom api can be placed and a lower smooth column rectangle can be open or closed on user input which can be used to AI navigate the whole system. (this is also an optional feature.)
+also add the delete option in finance.
+link all cards to each other .
+delete this file after all the tasks are complete.

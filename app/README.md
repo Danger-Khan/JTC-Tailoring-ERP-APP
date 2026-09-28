@@ -14,6 +14,8 @@ This desktop app uses a **neumorphic (soft UI)** design system ported from the J
 * **Translucent surfaces**: rounded cards (16px) frosted toward the backdrop photo's own colour, so they read as glass over it rather than as opaque blocks.
 * **📅 Production Calendar**: a month grid of deliveries due by day, with counts for due-this-month, due-in-7-days and overdue. Read-only, built from each order's delivery date.
 * **📦 Inventory**: fabric and trim stock in its own sheet, with a summary strip (items tracked / total units / low stock / out of stock), stock-in and stock-out adjustments, and low/empty rows tinted in the table.
+* **Right-to-left Urdu**: picking Urdu or Pashto mirrors the whole layout, not just the wording — sidebar on the right, headings and tables reading from the right, right-aligned input. English is untouched.
+* **Quick theme & language**: chips at the foot of the sidebar flip light/dark and switch language without a trip to Settings (Ctrl+T and Ctrl+G do the same).
 * **Full screen by default**: the app opens fullscreen for counter use; switch to windowed in Settings, or press F11 to toggle and Esc to leave fullscreen. The choice is remembered.
 * **Visual Analytics Dashboard**:
   * Three donut gauges for **Work Done**, **In Progress**, and **Work Remaining**, sharing one card with the reading printed inside each ring.

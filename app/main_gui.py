@@ -145,6 +145,13 @@ CARD_FROST = 0.09
 CARD_RADIUS = 16
 WELL_RADIUS = 10
 
+# Languages written right-to-left. Urdu and Pashto are both Arabic-script and
+# read right-to-left; the other packs are left-to-right. Selecting one of
+# these mirrors the whole layout -- sidebar on the right, labels and table
+# columns flowing the other way -- rather than only swapping the wording,
+# because a right-to-left reader starts at the right edge of the screen.
+RTL_LANGS = {"ur", "ps"}
+
 
 class CircularDonutChart(tk.Canvas):
     __slots__ = ('size', 'ring_color', 'bg_color', 'stroke_width', 'percentage')
@@ -190,7 +197,7 @@ class StatusPill(tk.Canvas):
     __slots__ = ()
 
     def __init__(self, parent, text, dot_color, bg, capsule, fg,
-                 height=21, pad=9, dot=7):
+                 height=21, pad=9, dot=7, rtl=False):
         import tkinter.font as tkfont
         font = (FONT_FAMILY, 8, "bold")
         text_w = tkfont.Font(family=font[0], size=font[1], weight="bold").measure(text)
@@ -202,10 +209,20 @@ class StatusPill(tk.Canvas):
         self.create_oval(width - height, 0, width, height, fill=capsule, outline="")
         self.create_rectangle(r, 0, width - r, height, fill=capsule, outline="")
         cy = height / 2.0
-        self.create_oval(pad, cy - dot / 2.0, pad + dot, cy + dot / 2.0,
-                         fill=dot_color, outline="")
-        self.create_text(pad + dot + 6, cy, text=text, anchor="w", fill=fg,
-                         font=font)
+        # The dot leads the text, so in a right-to-left layout it sits at the
+        # right end of the capsule and the text runs back from it. This class
+        # is not the app, so it is told the direction rather than asking.
+        if rtl:
+            dot_x = width - pad - dot
+            self.create_oval(dot_x, cy - dot / 2.0, dot_x + dot, cy + dot / 2.0,
+                             fill=dot_color, outline="")
+            self.create_text(dot_x - 6, cy, text=text, anchor="e", fill=fg,
+                             font=font)
+        else:
+            self.create_oval(pad, cy - dot / 2.0, pad + dot, cy + dot / 2.0,
+                             fill=dot_color, outline="")
+            self.create_text(pad + dot + 6, cy, text=text, anchor="w", fill=fg,
+                             font=font)
 
 
 class AtelierERPApp(tk.Tk):
@@ -277,6 +294,13 @@ class AtelierERPApp(tk.Tk):
         # get out of if the Settings screen is not reachable.
         self.bind("<F11>", lambda e: self.toggle_display_mode())
         self.bind("<Escape>", lambda e: self.apply_display_mode("windowed"))
+        # Ctrl+T flips the theme, Ctrl+G steps through the language packs.
+        # Both are also chips in the sidebar and rows in Settings; the
+        # shortcuts are for when a modal has focus and the sidebar does not.
+        self.bind("<Control-t>", self.toggle_theme)
+        self.bind("<Control-T>", self.toggle_theme)
+        self.bind("<Control-g>", self.cycle_language)
+        self.bind("<Control-G>", self.cycle_language)
 
         # Destructive operations are available only after an administrator login.
         self.current_user_role = "Viewer"
@@ -349,17 +373,30 @@ class AtelierERPApp(tk.Tk):
         if persist:
             self._app_state_for_current_data().save(display_mode=mode)
 
-    @staticmethod
-    def _display_mode_label(mode):
-        return "Full Screen ⛶" if mode == "fullscreen" else "Windowed 🗗"
+    def _display_mode_label(self, mode):
+        """The combobox wording for a display mode, in the active language."""
+        t = {**TRANSLATIONS["en"], **TRANSLATIONS.get(self.current_lang, {})}
+        return (t.get("display_fullscreen", "Full Screen ⛶") if mode == "fullscreen"
+                else t.get("display_windowed", "Windowed 🗗"))
+
+    def _theme_label(self, name):
+        """The combobox wording for a theme, in the active language."""
+        t = {**TRANSLATIONS["en"], **TRANSLATIONS.get(self.current_lang, {})}
+        return (t.get("theme_dark", "Dark Mode 🌙") if name == "dark"
+                else t.get("theme_light", "Light Mode ☀️"))
 
     def toggle_display_mode(self):
         self.apply_display_mode("windowed" if self.display_mode == "fullscreen"
                                 else "fullscreen")
 
     def on_display_mode_change(self, event=None):
-        self.apply_display_mode(
-            "fullscreen" if "Full" in self.cbo_display.get() else "windowed")
+        # Compared against the generated label rather than a substring: once
+        # the values are translated, "Full" appears in none of them. The
+        # English substring stays as a fallback so a literal set() still works.
+        sel = self.cbo_display.get()
+        is_full = (sel == self._display_mode_label("fullscreen")
+                   or "Full" in sel)
+        self.apply_display_mode("fullscreen" if is_full else "windowed")
 
     def _sane_geometry(self, geo):
         """Clamp a saved "WxH+X+Y" string so the window cannot reopen
@@ -473,6 +510,10 @@ class AtelierERPApp(tk.Tk):
         cv = tk.Canvas(self.login_dlg, width=W, height=H, highlightthickness=0, bd=0)
         cv.pack(fill=tk.BOTH, expand=True)
         self._login_images = [backdrop]
+        # Canvas item anchors are NOT mirrored: create_image places the image
+        # relative to an absolute canvas coordinate, so anchoring "ne" at x=0
+        # would hang the whole photo off the left edge. Reading direction is a
+        # property of the widgets laid out on top, not of the canvas origin.
         cv.create_image(0, 0, image=backdrop, anchor="nw")
 
         CW, CH = 372, 302
@@ -641,9 +682,12 @@ class AtelierERPApp(tk.Tk):
     # ==========================================
     # THEME / LAYOUT
     # ==========================================
-    def change_theme(self, event=None):
-        sel = self.cbo_theme.get()
-        self.current_theme = "dark" if "Dark" in sel else "light"
+    def set_theme(self, name):
+        """Switch palettes and rebuild. The single path every theme control
+        goes through -- the Settings combobox, the sidebar chip and Ctrl+T."""
+        if name not in THEMES:
+            return
+        self.current_theme = name
         self.colors = self._tinted_palette(THEMES[self.current_theme])
         # Cached images were flattened against the old palette's surface
         # colours, so they have to be rebuilt or they would show the previous
@@ -653,8 +697,35 @@ class AtelierERPApp(tk.Tk):
         self.body_container.destroy()
         self.build_ui_layout()
 
+    def change_theme(self, event=None):
+        """Settings combobox handler. Matches the generated label first so it
+        keeps working once the values are translated."""
+        sel = self.cbo_theme.get()
+        self.set_theme("dark" if (sel == self._theme_label("dark")
+                                  or "Dark" in sel) else "light")
+
+    def toggle_theme(self, event=None):
+        """Flip light <-> dark. Bound to the sidebar chip and to Ctrl+T."""
+        self.set_theme("dark" if self.current_theme == "light" else "light")
+
+    def cycle_language(self, event=None):
+        """Step to the next language pack. Bound to Ctrl+G, for when the
+        sidebar is not visible (a modal has focus, say)."""
+        codes = [code for code, _ in LANGUAGE_OPTIONS]
+        try:
+            nxt = codes[(codes.index(self.current_lang) + 1) % len(codes)]
+        except ValueError:
+            nxt = codes[0]
+        self.set_language(nxt)
+
     def build_ui_layout(self):
         self.configure(bg=self.colors["bg_body"])
+        # Typed text starts at the reader's edge too. Setting this through the
+        # option database rather than on each of the 16 Entry call sites means
+        # a field added later is mirrored without anyone remembering to do it.
+        # Tk reads the database when a widget is constructed, which is exactly
+        # when a direction change rebuilds them all.
+        self.option_add("*Entry.justify", "right" if self.is_rtl else "left")
         self.apply_ttk_styles()
         self.create_layout()
         # Reopen on whichever section was active before (theme rebuild,
@@ -664,6 +735,11 @@ class AtelierERPApp(tk.Tk):
                           ("dashboard", "customer", "order_card", "calendar",
                            "employee", "inventory", "finance", "expenses", "admin")
                           else "dashboard")
+        # Widgets are constructed with their English text and translated
+        # afterwards, so a rebuild has to re-run the language pass or the UI
+        # silently reverts to English while current_lang still says otherwise.
+        if self.current_lang != "en":
+            self.apply_language_pack()
         self.update_graphics_and_stats()
 
     def apply_ttk_styles(self):
@@ -677,7 +753,8 @@ class AtelierERPApp(tk.Tk):
         self.style.map("Treeview", background=[('selected', PRIMARY)], foreground=[('selected', '#F1F1F0')])
         self.style.configure("TCombobox", font=(FONT_FAMILY, 9),
                              fieldbackground=self.colors["bg_card"], background=self.colors["bg_card"],
-                             foreground=self.colors["text_main"], arrowcolor=self.colors["text_main"])
+                             foreground=self.colors["text_main"], arrowcolor=self.colors["text_main"],
+                             justify=self._justify("left"))
         self.style.map("TCombobox",
                        fieldbackground=[('readonly', self.colors["bg_card"])],
                        foreground=[('readonly', self.colors["text_main"])])
@@ -695,13 +772,13 @@ class AtelierERPApp(tk.Tk):
         # brand lockup, the accent trio, and the running clock.
         sidebar_shell = tk.Frame(self.body_container, bg=self.colors["bg_sidebar"], width=232,
                                  highlightbackground=self.colors["border"], highlightthickness=1)
-        sidebar_shell.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 16))
+        sidebar_shell.pack(side=self._side(tk.LEFT), fill=tk.Y, padx=(0, 16))
         sidebar_shell.pack_propagate(False)
 
         accent = tk.Frame(sidebar_shell, height=4, bg=self.colors["bg_sidebar"])
         accent.pack(side=tk.TOP, fill=tk.X)
         for color in ACCENT_STRIP:
-            tk.Frame(accent, bg=color, height=4).pack(side=tk.LEFT, fill=tk.X, expand=True)
+            tk.Frame(accent, bg=color, height=4).pack(side=self._side(tk.LEFT), fill=tk.X, expand=True)
 
         brand = tk.Frame(sidebar_shell, bg=self.colors["bg_sidebar"])
         brand.pack(side=tk.TOP, fill=tk.X, padx=14, pady=(16, 0))
@@ -711,13 +788,13 @@ class AtelierERPApp(tk.Tk):
         if logo is not None:
             self._sidebar_logo = logo
             tk.Label(brand, image=logo, bg=self.colors["bg_sidebar"],
-                     bd=0).pack(side=tk.LEFT, padx=(0, 9))
+                     bd=0).pack(side=self._side(tk.LEFT), padx=(0, 9))
         else:
             tk.Label(brand, text="JTC", bg=PRIMARY, fg="#F1F1F0", font=(FONT_FAMILY, 9, "bold"),
-                     padx=8, pady=3).pack(side=tk.LEFT, padx=(0, 9))
+                     padx=8, pady=3).pack(side=self._side(tk.LEFT), padx=(0, 9))
         tk.Label(brand, text="JHAGRA\nCREATION & FABRICS", bg=self.colors["bg_sidebar"],
                  fg=self.colors["text_main"], font=(FONT_FAMILY, 8, "bold"),
-                 justify="left", anchor="w").pack(side=tk.LEFT)
+                 justify=self._justify("left"), anchor=self._anchor("w")).pack(side=self._side(tk.LEFT))
         tk.Frame(sidebar_shell, bg=self.colors["border"], height=1).pack(
             side=tk.TOP, fill=tk.X, padx=14, pady=(14, 10))
 
@@ -733,18 +810,22 @@ class AtelierERPApp(tk.Tk):
             owner_row = tk.Frame(sidebar_shell, bg=self.colors["bg_sidebar"])
             owner_row.pack(side=tk.BOTTOM, fill=tk.X, padx=14, pady=(0, 4))
             tk.Label(owner_row, image=owner, bg=self.colors["bg_sidebar"],
-                     bd=0).pack(side=tk.LEFT, padx=(0, 9))
+                     bd=0).pack(side=self._side(tk.LEFT), padx=(0, 9))
             who = tk.Frame(owner_row, bg=self.colors["bg_sidebar"])
-            who.pack(side=tk.LEFT, anchor="w")
+            who.pack(side=self._side(tk.LEFT), anchor=self._anchor("w"))
             tk.Label(who, text="Jhagra", bg=self.colors["bg_sidebar"],
-                     fg=self.colors["text_main"], font=(FONT_FAMILY, 9)).pack(anchor="w")
+                     fg=self.colors["text_main"], font=(FONT_FAMILY, 9)).pack(anchor=self._anchor("w"))
             self.lbl_sidebar_role = tk.Label(who, text=self._track("Owner"),
                                              bg=self.colors["bg_sidebar"],
                                              fg=self.colors["text_4"],
                                              font=(FONT_FAMILY, 7, "bold"))
-            self.lbl_sidebar_role.pack(anchor="w")
+            self.lbl_sidebar_role.pack(anchor=self._anchor("w"))
             tk.Frame(sidebar_shell, bg=self.colors["border"], height=1).pack(
                 side=tk.BOTTOM, fill=tk.X, padx=14, pady=(0, 10))
+
+        # Packed side=BOTTOM after the owner block's divider, so it settles
+        # just above it rather than being pushed off by the nav list.
+        self._sidebar_quick_controls(sidebar_shell)
 
         sidebar = tk.Frame(sidebar_shell, bg=self.colors["bg_sidebar"])
         sidebar.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
@@ -764,7 +845,7 @@ class AtelierERPApp(tk.Tk):
                     ("admin", "nav_admin")]
 
         for key, lang_key in nav_keys:
-            btn = tk.Button(sidebar, text=TRANSLATIONS[self.current_lang][lang_key], anchor="w", font=(FONT_FAMILY, 10, "bold"),
+            btn = tk.Button(sidebar, text=TRANSLATIONS[self.current_lang][lang_key], anchor=self._anchor("w"), font=(FONT_FAMILY, 10, "bold"),
                             bg=self.colors["bg_sidebar"], fg=self.colors["text_muted"], activebackground=PRIMARY, activeforeground="white",
                             bd=0, padx=16, pady=12, cursor="hand2", command=lambda k=key: self.show_section(k))
             btn.pack(fill=tk.X, pady=2, padx=6)
@@ -782,7 +863,7 @@ class AtelierERPApp(tk.Tk):
             btn.bind("<Leave>", _on_leave)
 
         self.main_content = tk.Frame(self.body_container, bg=self.colors["bg_body"])
-        self.main_content.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.main_content.pack(side=self._side(tk.LEFT), fill=tk.BOTH, expand=True)
 
         self.sections = {}
         self.build_dashboard_section()
@@ -867,6 +948,11 @@ class AtelierERPApp(tk.Tk):
         cv.pack(**pack_opts)
 
         inner = tk.Frame(cv, bg=self.colors[fill_key], padx=padx, pady=pady)
+        # "nw" in both directions -- see the note on the login backdrop above.
+        # The inner frame is pinned to the canvas origin and mirrors its own
+        # contents; anchoring it "ne" at x=inset_pad pushed every card's
+        # contents off the left of its own canvas, which rendered as a page
+        # full of empty cards.
         item = cv.create_window(inset_pad, inset_pad, window=inner, anchor="nw")
 
         fills = str(pack_opts.get("fill", "none"))
@@ -966,17 +1052,17 @@ class AtelierERPApp(tk.Tk):
         """Icon + big number + tracked caption tile. Returns the value label
         so the caller can keep it and update the number later."""
         card = self._neu_card(parent, pack_opts, padx=16, pady=14)
-        tile = self._neu_well(card, dict(side=tk.LEFT, padx=(0, 13)), padx=8, pady=5)
+        tile = self._neu_well(card, dict(side=self._side(tk.LEFT), padx=(0, 13)), padx=8, pady=5)
         tk.Label(tile, text=icon, font=(FONT_FAMILY, 15), bg=self.colors["well"],
                  fg=self.colors["text_muted"]).pack()
         box = tk.Frame(card, bg=self.colors["bg_card"])
-        box.pack(side=tk.LEFT, anchor="w")
+        box.pack(side=self._side(tk.LEFT), anchor=self._anchor("w"))
         val = tk.Label(box, text=str(value), font=(FONT_FAMILY, 17),
                        bg=self.colors["bg_card"], fg=self.colors["text_main"])
-        val.pack(anchor="w")
+        val.pack(anchor=self._anchor("w"))
         cap = tk.Label(box, text=self._track(label), font=(FONT_FAMILY, 7, "bold"),
                        bg=self.colors["bg_card"], fg=self.colors["text_4"])
-        cap.pack(anchor="w")
+        cap.pack(anchor=self._anchor("w"))
         return val, cap
 
     def _tinted_palette(self, base):
@@ -1058,6 +1144,151 @@ class AtelierERPApp(tk.Tk):
         sec.bind("<Configure>", schedule)
         schedule()
 
+    # ==========================================
+    # DIRECTION (LTR / RTL)
+    # ==========================================
+    # Tk has no direction property: a widget is packed to a literal side and a
+    # label is anchored to a literal compass point. Mirroring the UI therefore
+    # means mirroring those arguments at every call site, which is what these
+    # four helpers do. They are no-ops in a left-to-right language, so the
+    # English layout is bit-for-bit what it was before.
+
+    @property
+    def is_rtl(self):
+        """True while a right-to-left language pack is active."""
+        return self.current_lang in RTL_LANGS
+
+    def _side(self, side):
+        """Mirror a pack side. tk.TOP/tk.BOTTOM are returned untouched --
+        vertical order is unaffected by reading direction."""
+        if not self.is_rtl:
+            return side
+        return {tk.LEFT: tk.RIGHT, tk.RIGHT: tk.LEFT}.get(side, side)
+
+    def _anchor(self, a):
+        """Mirror an anchor or sticky string: w<->e, nw<->ne, sw<->se.
+        'n', 's', 'center' and the both-edges sticky values pass through."""
+        if not self.is_rtl:
+            return a
+        # An explicit table, not a per-character swap: Tk's anchor vocabulary
+        # includes the word "center", and swapping its letters individually
+        # turns it into "cwntwr".
+        return {"w": "e", "e": "w",
+                "nw": "ne", "ne": "nw",
+                "sw": "se", "se": "sw"}.get(a, a)
+
+    def _justify(self, j):
+        """Mirror a text justification."""
+        if not self.is_rtl:
+            return j
+        return {"left": "right", "right": "left"}.get(j, j)
+
+    def _pad(self, pad):
+        """Mirror an asymmetric (left, right) padx tuple. A bare int is
+        already symmetric, so it passes through."""
+        if not self.is_rtl:
+            return pad
+        if isinstance(pad, (tuple, list)) and len(pad) == 2:
+            return (pad[1], pad[0])
+        return pad
+
+    def _sidebar_quick_controls(self, parent):
+        """Theme and language chips at the foot of the sidebar.
+
+        Both settings already live in the Settings page; these are shortcuts,
+        because on a shop counter the light/dark switch is a time-of-day thing
+        and the language switch is a per-customer thing. Neither is worth a
+        trip through a settings page and back to where you were.
+        """
+        t = {**TRANSLATIONS["en"], **TRANSLATIONS.get(self.current_lang, {})}
+        row = tk.Frame(parent, bg=self.colors["bg_sidebar"])
+        row.pack(side=tk.BOTTOM, fill=tk.X, padx=12, pady=(0, 8))
+
+        def chip(text, command, tooltip_key):
+            b = tk.Button(row, text=text, command=command,
+                          bg=self.colors["well"], fg=self.colors["text_muted"],
+                          activebackground=self.colors["bg_chart"],
+                          activeforeground=self.colors["text_main"],
+                          font=(FONT_FAMILY, 8, "bold"), bd=0, padx=8, pady=5,
+                          cursor="hand2", anchor="center")
+            b.bind("<Enter>", lambda e, w=b: w.configure(
+                bg=self.colors["bg_chart"], fg=self.colors["text_main"]))
+            b.bind("<Leave>", lambda e, w=b: w.configure(
+                bg=self.colors["well"], fg=self.colors["text_muted"]))
+            return b
+
+        is_dark = self.current_theme == "dark"
+        self.btn_quick_theme = chip(
+            ("🌙 " + t.get("theme_dark_short", "Dark")) if is_dark
+            else ("☀️ " + t.get("theme_light_short", "Light")),
+            self.toggle_theme, "theme_label")
+        self.btn_quick_theme.pack(side=self._side(tk.LEFT), expand=True,
+                                  fill=tk.X, padx=(0, 3))
+
+        code_to_label = {c: l for c, l in LANGUAGE_OPTIONS}
+        self.btn_quick_lang = chip(
+            "🌐 " + self.current_lang.upper(),
+            self._open_language_menu, "language_label")
+        self.btn_quick_lang.pack(side=self._side(tk.RIGHT), expand=True,
+                                 fill=tk.X, padx=(3, 0))
+
+    def _open_language_menu(self):
+        """Drop the language list under the sidebar chip. A menu rather than
+        a combobox: the sidebar is too narrow for a readable one, and a tick
+        beside the active pack is clearer than a collapsed field."""
+        menu = tk.Menu(self, tearoff=0,
+                       bg=self.colors["bg_card"], fg=self.colors["text_main"],
+                       activebackground=PRIMARY, activeforeground="#F1F1F0",
+                       bd=0, font=(FONT_FAMILY, 9))
+        for code, label in LANGUAGE_OPTIONS:
+            mark = "  ✓" if code == self.current_lang else "     "
+            rtl_hint = "  ←" if code in RTL_LANGS else ""
+            menu.add_command(label=label + rtl_hint + mark,
+                             command=lambda c=code: self.set_language(c))
+        b = self.btn_quick_lang
+        try:
+            menu.tk_popup(b.winfo_rootx(),
+                          b.winfo_rooty() - menu.yposition(len(LANGUAGE_OPTIONS)))
+        finally:
+            menu.grab_release()
+
+    def _grid_col(self, col, total=7):
+        """Mirror a grid column index so a row of equal-width columns reads
+        from the starting edge. Used for the calendar's weekday grid, where
+        the days of the week themselves have to run the other way."""
+        return (total - 1 - col) if self.is_rtl else col
+
+    def _apply_tree_direction(self, tree, cols):
+        """Mirror a Treeview for RTL: columns read from the right edge and
+        cell text hangs from it.
+
+        Reordering via `displaycolumns` rather than the `columns` option is
+        deliberate -- `columns` is the order every insert(values=...) call
+        site supplies its tuple in, so reversing it would silently put each
+        value under the wrong heading. `displaycolumns` changes only what is
+        shown, and Tk keeps the value mapping intact.
+        """
+        cols = tuple(cols)
+        try:
+            tree.configure(displaycolumns=tuple(reversed(cols)) if self.is_rtl
+                           else cols)
+            for c in cols:
+                tree.column(c, anchor=self._anchor("w"))
+                tree.heading(c, anchor=self._anchor("w"))
+        except tk.TclError:
+            # A tree mid-rebuild is not worth taking the whole UI down for.
+            pass
+
+    def _text_align(self):
+        """The anchor a run of translated text should hang from: the edge the
+        reader starts at."""
+        return "e" if self.is_rtl else "w"
+
+    def _columns(self, cols):
+        """Table columns read from the starting edge too, so an RTL layout
+        shows them in reverse. Returns a plain tuple either way."""
+        return tuple(reversed(cols)) if self.is_rtl else tuple(cols)
+
     def _page_header(self, parent, title, subtitle):
         """Stacked title + subtitle on the left, room for a primary action on
         the right -- the design's <PageHeader>. Returns (title_label,
@@ -1065,15 +1296,15 @@ class AtelierERPApp(tk.Tk):
         hdr = tk.Frame(parent, bg=self.colors["bg_body"])
         hdr.pack(fill=tk.X, padx=2, pady=(2, 12))
         titles = tk.Frame(hdr, bg=self.colors["bg_body"])
-        titles.pack(side=tk.LEFT)
+        titles.pack(side=self._side(tk.LEFT))
         lbl_title = tk.Label(titles, text=title, font=(FONT_FAMILY, 19),
                              bg=self.colors["bg_body"], fg=self.colors["text_main"])
-        lbl_title.pack(anchor="w")
+        lbl_title.pack(anchor=self._anchor("w"))
         lbl_sub = tk.Label(titles, text=subtitle, font=(FONT_FAMILY, 9),
                            bg=self.colors["bg_body"], fg=self.colors["text_muted"])
-        lbl_sub.pack(anchor="w", pady=(2, 0))
+        lbl_sub.pack(anchor=self._anchor("w"), pady=(2, 0))
         right = tk.Frame(hdr, bg=self.colors["bg_body"])
-        right.pack(side=tk.RIGHT)
+        right.pack(side=self._side(tk.RIGHT))
         return lbl_title, lbl_sub, right
 
     def _primary_button(self, parent, text, command):
@@ -1101,16 +1332,16 @@ class AtelierERPApp(tk.Tk):
         row.pack(fill=tk.X, pady=(0, 12))
         well = self._neu_well(row, dict(fill=tk.X), padx=12, pady=7)
         tk.Label(well, text=label_text, font=(FONT_FAMILY, 8, "bold"),
-                 bg=self.colors["well"], fg=self.colors["text_muted"]).pack(side=tk.LEFT, padx=(0, 8))
+                 bg=self.colors["well"], fg=self.colors["text_muted"]).pack(side=self._side(tk.LEFT), padx=(0, 8))
         ent = tk.Entry(well, font=(FONT_FAMILY, 10), bg=self.colors["well"],
                        fg=self.colors["text_main"], insertbackground=self.colors["text_main"],
                        relief="flat", highlightthickness=0, bd=0)
-        ent.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 8))
+        ent.pack(side=self._side(tk.LEFT), fill=tk.X, expand=True, padx=(0, 8))
         ent.bind("<KeyRelease>", on_key)
         setattr(self, entry_attr, ent)
         tk.Button(well, text="✖", bg=self.colors["well"], fg=self.colors["text_3"],
                   font=(FONT_FAMILY, 9), bd=0, padx=6, pady=0, cursor="hand2",
-                  activebackground=self.colors["well"], command=on_clear).pack(side=tk.LEFT)
+                  activebackground=self.colors["well"], command=on_clear).pack(side=self._side(tk.LEFT))
         return row
 
     # ==========================================
@@ -1128,28 +1359,28 @@ class AtelierERPApp(tk.Tk):
         hdr = tk.Frame(sec, bg=self.colors["bg_body"])
         hdr.pack(fill=tk.X, padx=2, pady=(2, 14))
         titles = tk.Frame(hdr, bg=self.colors["bg_body"])
-        titles.pack(side=tk.LEFT)
+        titles.pack(side=self._side(tk.LEFT))
         # Deliberately NOT bold: the design sets its page titles in a light
         # weight (400) and leans on size alone for hierarchy.
         self.lbl_dash_title = tk.Label(titles, text="Dashboard", font=(FONT_FAMILY, 19),
                                        bg=self.colors["bg_body"], fg=self.colors["text_main"])
-        self.lbl_dash_title.pack(anchor="w")
+        self.lbl_dash_title.pack(anchor=self._anchor("w"))
         subrow = tk.Frame(titles, bg=self.colors["bg_body"])
-        subrow.pack(anchor="w", pady=(2, 0))
+        subrow.pack(anchor=self._anchor("w"), pady=(2, 0))
         self.lbl_dash_sub = tk.Label(subrow, text="Live overview of tailoring work",
                                      font=(FONT_FAMILY, 9), bg=self.colors["bg_body"],
                                      fg=self.colors["text_muted"])
-        self.lbl_dash_sub.pack(side=tk.LEFT)
+        self.lbl_dash_sub.pack(side=self._side(tk.LEFT))
         # Long-form date + running clock, as the web dashboard carries.
         self.lbl_dash_datetime = tk.Label(subrow, text="", font=(FONT_FAMILY, 9),
                                           bg=self.colors["bg_body"], fg=self.colors["text_3"])
-        self.lbl_dash_datetime.pack(side=tk.LEFT)
+        self.lbl_dash_datetime.pack(side=self._side(tk.LEFT))
         self.btn_dash_new_order = tk.Button(
             hdr, text="+ New Order", bg=PRIMARY, fg="#F1F1F0",
             font=(FONT_FAMILY, 9, "bold"), bd=0, padx=16, pady=8, cursor="hand2",
             activebackground=PRIMARY, activeforeground="#F1F1F0",
             command=self.open_add_order_modal)
-        self.btn_dash_new_order.pack(side=tk.RIGHT)
+        self.btn_dash_new_order.pack(side=self._side(tk.RIGHT))
 
         # --- All three order gauges share ONE raised card, spread evenly
         # across it, rather than sitting in three separate cards.
@@ -1159,7 +1390,7 @@ class AtelierERPApp(tk.Tk):
 
         def gauge(caption, color):
             col = tk.Frame(gauges, bg=self.colors["bg_card"])
-            col.pack(side=tk.LEFT, expand=True, fill=tk.X)
+            col.pack(side=self._side(tk.LEFT), expand=True, fill=tk.X)
             chart = CircularDonutChart(col, size=94, ring_color=color,
                                        bg_color=self.colors["well"], stroke_width=9,
                                        theme_colors=self.colors)
@@ -1181,11 +1412,11 @@ class AtelierERPApp(tk.Tk):
         tiles = tk.Frame(sec, bg=self.colors["bg_body"])
         tiles.pack(fill=tk.X, pady=(0, 14))
         self.lbl_stat_orders, self.lbl_stat_orders_cap = self._stat_tile(
-            tiles, dict(side=tk.LEFT, expand=True, fill=tk.X, padx=(0, 7)), "\U0001F9FE", 0, "Total Orders")
+            tiles, dict(side=self._side(tk.LEFT), expand=True, fill=tk.X, padx=(0, 7)), "\U0001F9FE", 0, "Total Orders")
         self.lbl_stat_customers, self.lbl_stat_customers_cap = self._stat_tile(
-            tiles, dict(side=tk.LEFT, expand=True, fill=tk.X, padx=7), "\U0001F465", 0, "Customers")
+            tiles, dict(side=self._side(tk.LEFT), expand=True, fill=tk.X, padx=7), "\U0001F465", 0, "Customers")
         self.lbl_stat_onduty, self.lbl_stat_onduty_cap = self._stat_tile(
-            tiles, dict(side=tk.LEFT, expand=True, fill=tk.X, padx=(7, 0)), "✂️", 0, "Tailors On Duty")
+            tiles, dict(side=self._side(tk.LEFT), expand=True, fill=tk.X, padx=(7, 0)), "✂️", 0, "Tailors On Duty")
 
         # --- Finance snapshot row: mirrors the Finance section's totals so
         # the money picture is visible without leaving the Dashboard. Values
@@ -1197,24 +1428,24 @@ class AtelierERPApp(tk.Tk):
         def money_card(pack_opts, caption, color):
             card = self._neu_card(finance_frame, pack_opts, padx=16, pady=13)
             box = tk.Frame(card, bg=self.colors["bg_card"])
-            box.pack(side=tk.LEFT, anchor="w")
+            box.pack(side=self._side(tk.LEFT), anchor=self._anchor("w"))
             cap = self._section_label(box, caption)
-            cap.pack(anchor="w")
+            cap.pack(anchor=self._anchor("w"))
             val = tk.Label(box, text="PKR 0.00", font=(FONT_FAMILY, 14),
                            bg=self.colors["bg_card"], fg=self.colors["text_main"])
-            val.pack(anchor="w", pady=(3, 0))
+            val.pack(anchor=self._anchor("w"), pady=(3, 0))
             chart = CircularDonutChart(card, size=62, ring_color=color,
                                        bg_color=self.colors["well"], stroke_width=7,
                                        theme_colors=self.colors)
-            chart.pack(side=tk.RIGHT)
+            chart.pack(side=self._side(tk.RIGHT))
             return cap, val, chart
 
         self.lbl_fin_paid_title, self.lbl_fin_paid_val, self.chart_fin_paid = money_card(
-            dict(side=tk.LEFT, expand=True, fill=tk.X, padx=(0, 7)), "TOTAL PAID", SAGE)
+            dict(side=self._side(tk.LEFT), expand=True, fill=tk.X, padx=(0, 7)), "TOTAL PAID", SAGE)
         self.lbl_fin_remaining_title, self.lbl_fin_remaining_val, self.chart_fin_remaining = money_card(
-            dict(side=tk.LEFT, expand=True, fill=tk.X, padx=7), "TOTAL REMAINING", GAUGE_PROGRESS)
+            dict(side=self._side(tk.LEFT), expand=True, fill=tk.X, padx=7), "TOTAL REMAINING", GAUGE_PROGRESS)
         self.lbl_fin_debt_title, self.lbl_fin_debt_val, self.chart_fin_debt = money_card(
-            dict(side=tk.LEFT, expand=True, fill=tk.X, padx=(7, 0)), "TOTAL DEBT", TERRACOTTA)
+            dict(side=self._side(tk.LEFT), expand=True, fill=tk.X, padx=(7, 0)), "TOTAL DEBT", TERRACOTTA)
 
         # --- Active ledger -------------------------------------------------
         ledger_card = self._neu_card(sec, dict(fill=tk.BOTH, expand=True, pady=(0, 2)),
@@ -1222,11 +1453,17 @@ class AtelierERPApp(tk.Tk):
         tbl_bar = tk.Frame(ledger_card, bg=self.colors["bg_card"])
         tbl_bar.pack(fill=tk.X, pady=(0, 12))
         self.lbl_ledger_head = self._section_label(tbl_bar, "Active Orders Ledger")
-        self.lbl_ledger_head.pack(side=tk.LEFT)
-        tk.Button(tbl_bar, text="✔ Mark Ready", bg=self.colors["bg_card"], fg=SAGE,
-                  font=(FONT_FAMILY, 8, "bold"), bd=0, padx=10, pady=4, cursor="hand2",
-                  activebackground=self.colors["well"], activeforeground=SAGE,
-                  command=lambda: self.quick_change_order_status("Ready")).pack(side=tk.RIGHT)
+        self.lbl_ledger_head.pack(side=self._side(tk.LEFT))
+        # Built and packed on separate statements: .pack() returns None, so
+        # assigning the chained call would hand self.btn_mark_ready a None
+        # that apply_language_pack would then fail to configure.
+        self.btn_mark_ready = tk.Button(
+            tbl_bar, text=TRANSLATIONS[self.current_lang].get("btn_mark_ready", "✔ Mark Ready"),
+            bg=self.colors["bg_card"], fg=SAGE,
+            font=(FONT_FAMILY, 8, "bold"), bd=0, padx=10, pady=4, cursor="hand2",
+            activebackground=self.colors["well"], activeforeground=SAGE,
+            command=lambda: self.quick_change_order_status("Ready"))
+        self.btn_mark_ready.pack(side=self._side(tk.RIGHT))
 
         # The ledger is rendered as a list of inset rows (order no. + a
         # compound customer/garment cell + a status pill) instead of a grid,
@@ -1251,15 +1488,33 @@ class AtelierERPApp(tk.Tk):
             self.tree_orders.heading(c, text=header_text)
             self.tree_orders.column(c, width=90)
 
+    def _status_label(self, status):
+        """Translate a status for display only.
+
+        The workbook keeps its English values -- they are data, and the
+        reports, the finance tabs and every status test in the code match on
+        them. Only the words the reader sees are swapped, so switching
+        language can never rewrite what is stored.
+        """
+        t = {**TRANSLATIONS["en"], **TRANSLATIONS.get(self.current_lang, {})}
+        raw = clean_val(status)
+        key = {"in progress": "status_in_progress", "ready": "status_ready",
+               "delivered": "status_delivered", "pending": "status_pending",
+               "not delivered": "status_not_delivered",
+               "partial": "status_partial"}.get(raw.strip().lower())
+        return t.get(key, raw) if key else raw
+
     def _ledger_status_style(self, status):
         """Pill colour and display text for an order status, reusing the same
         three accents the gauges above the ledger are drawn in."""
         st = clean_val(status).lower()
+        shown = self._status_label(status)
+        t = {**TRANSLATIONS["en"], **TRANSLATIONS.get(self.current_lang, {})}
         if "ready" in st or "done" in st or "deliver" in st:
-            return GAUGE_DONE, clean_val(status) or "Ready"
+            return GAUGE_DONE, shown or t.get("status_ready", "Ready")
         if "progress" in st:
-            return GAUGE_PROGRESS, clean_val(status) or "In Progress"
-        return GAUGE_REMAINING, clean_val(status) or "Pending"
+            return GAUGE_PROGRESS, shown or t.get("status_in_progress", "In Progress")
+        return GAUGE_REMAINING, shown or t.get("status_pending", "Pending")
 
     def _render_ledger_rows(self):
         """Draw the visible ledger from whatever tree_orders currently holds,
@@ -1271,9 +1526,10 @@ class AtelierERPApp(tk.Tk):
         idx = {h: i for i, h in enumerate(self.ord_headers)}
         children = self.tree_orders.get_children()
         if not children:
-            tk.Label(self.ledger_rows, text="No active orders yet.",
+            tk.Label(self.ledger_rows, text={**TRANSLATIONS["en"], **TRANSLATIONS.get(
+                self.current_lang, {})}.get("ledger_empty", "No active orders yet."),
                      font=(FONT_FAMILY, 9), bg=self.colors["bg_card"],
-                     fg=self.colors["text_3"]).pack(anchor="w", pady=6)
+                     fg=self.colors["text_3"]).pack(anchor=self._anchor("w"), pady=6)
             return
 
         unassigned = TRANSLATIONS[self.current_lang].get("dash_unassigned", "Unassigned")
@@ -1286,22 +1542,23 @@ class AtelierERPApp(tk.Tk):
 
             row = self._neu_well(self.ledger_rows, dict(fill=tk.X, pady=3), padx=13, pady=9)
             tk.Label(row, text=cell("id"), font=(FONT_FAMILY, 8, "bold"), width=9,
-                     anchor="w", bg=self.colors["well"],
-                     fg=self.colors["text_3"]).pack(side=tk.LEFT)
+                     anchor=self._anchor("w"), bg=self.colors["well"],
+                     fg=self.colors["text_3"]).pack(side=self._side(tk.LEFT))
 
             # Compound cell: customer on top, garment + tailor underneath.
             mid = tk.Frame(row, bg=self.colors["well"])
-            mid.pack(side=tk.LEFT, fill=tk.X, expand=True)
+            mid.pack(side=self._side(tk.LEFT), fill=tk.X, expand=True)
             tk.Label(mid, text=cell("customer_id"), font=(FONT_FAMILY, 10),
-                     anchor="w", bg=self.colors["well"],
-                     fg=self.colors["text_main"]).pack(anchor="w", fill=tk.X)
+                     anchor=self._anchor("w"), bg=self.colors["well"],
+                     fg=self.colors["text_main"]).pack(anchor=self._anchor("w"), fill=tk.X)
             tk.Label(mid, text=cell("garment") + "  ·  " + (cell("tailor") or unassigned),
-                     font=(FONT_FAMILY, 8), anchor="w", bg=self.colors["well"],
-                     fg=self.colors["text_4"]).pack(anchor="w", fill=tk.X)
+                     font=(FONT_FAMILY, 8), anchor=self._anchor("w"), bg=self.colors["well"],
+                     fg=self.colors["text_4"]).pack(anchor=self._anchor("w"), fill=tk.X)
 
             color, text = self._ledger_status_style(cell("status"))
             StatusPill(row, text, color, self.colors["well"],
-                       self.colors["bg_card"], self.colors["text_main"]).pack(side=tk.RIGHT)
+                       self.colors["bg_card"], self.colors["text_main"],
+                       rtl=self.is_rtl).pack(side=self._side(tk.RIGHT))
 
             shell = row.master
             self._ledger_row_widgets[iid] = shell
@@ -1333,7 +1590,9 @@ class AtelierERPApp(tk.Tk):
         # click into tree_orders' selection before handing the event over.
         if self.tree_orders.selection():
             menu = tk.Menu(self, tearoff=0)
-            menu.add_command(label="✔ Mark Ready", command=lambda: self.quick_change_order_status("Ready"))
+            menu.add_command(label=TRANSLATIONS[self.current_lang].get(
+                "btn_mark_ready", "✔ Mark Ready"),
+                command=lambda: self.quick_change_order_status("Ready"))
             menu.add_command(label="⏳ Mark In Progress", command=lambda: self.quick_change_order_status("In Progress"))
             menu.add_separator()
             menu.add_command(label="📄 Print Order PDF", command=self.generate_order_pdf)
@@ -1377,7 +1636,7 @@ class AtelierERPApp(tk.Tk):
         t = TRANSLATIONS[self.current_lang]
         self.btn_cust_modal = self._primary_button(hdr_right, "+ Add Customer",
                                                    self.open_add_customer_modal)
-        self.btn_cust_modal.pack(side=tk.RIGHT)
+        self.btn_cust_modal.pack(side=self._side(tk.RIGHT))
 
         # Secondary actions live on their own row so they can never crowd the
         # title the way five buttons in the header used to.
@@ -1385,18 +1644,18 @@ class AtelierERPApp(tk.Tk):
         tools.pack(fill=tk.X, pady=(0, 12))
         self.btn_new_card = self._toolbar_button(
             tools, "🖨️ New Order Card", lambda: self.show_section("order_card"))
-        self.btn_new_card.pack(side=tk.LEFT, padx=(0, 7))
+        self.btn_new_card.pack(side=self._side(tk.LEFT), padx=(0, 7))
         self.btn_cust_receipt = self._toolbar_button(
             tools, t.get("cust_btn_receipt", "🧾 Print Latest Receipt"),
             self.print_selected_customer_receipt)
-        self.btn_cust_receipt.pack(side=tk.LEFT, padx=(0, 7))
+        self.btn_cust_receipt.pack(side=self._side(tk.LEFT), padx=(0, 7))
         self.btn_cust_edit = self._toolbar_button(
             tools, t.get("cust_btn_edit", "✏️ Edit"), self.edit_selected_customer)
-        self.btn_cust_edit.pack(side=tk.LEFT, padx=(0, 7))
+        self.btn_cust_edit.pack(side=self._side(tk.LEFT), padx=(0, 7))
         self.btn_cust_delete = self._toolbar_button(
             tools, t.get("cust_btn_delete", "🗑️ Delete"),
             self.delete_selected_customer, danger=True)
-        self.btn_cust_delete.pack(side=tk.LEFT)
+        self.btn_cust_delete.pack(side=self._side(tk.LEFT))
 
         self._search_row(sec, "🔍 SEARCH", "ent_cust_search",
                          self.filter_customers, self.clear_customer_search)
@@ -1406,6 +1665,7 @@ class AtelierERPApp(tk.Tk):
         for c in self.cust_headers:
             self.tree_customers.heading(c, text=c.upper())
             self.tree_customers.column(c, width=75)
+        self._apply_tree_direction(self.tree_customers, self.cust_headers)
         self.tree_customers.pack(fill=tk.BOTH, expand=True)
 
         # Store original customer data for filtering
@@ -1434,29 +1694,30 @@ class AtelierERPApp(tk.Tk):
             sec, "Staff & Tailors", "Manage staff, roles and daily tasks")
         self.btn_emp_modal = self._primary_button(hdr_right, "+ Add Staff",
                                                   self.open_add_employee_modal)
-        self.btn_emp_modal.pack(side=tk.RIGHT)
+        self.btn_emp_modal.pack(side=self._side(tk.RIGHT))
 
         # Secondary actions on their own row, same as the Customer Hub.
         tools = tk.Frame(sec, bg=self.colors["bg_body"])
         tools.pack(fill=tk.X, pady=(0, 12))
         self.btn_task_modal = self._toolbar_button(tools, "🛠️ Assign Task",
                                                    self.open_assign_task_modal)
-        self.btn_task_modal.pack(side=tk.LEFT, padx=(0, 7))
+        self.btn_task_modal.pack(side=self._side(tk.LEFT), padx=(0, 7))
         self.btn_emp_print = self._toolbar_button(tools, "🧾 Print Task Slip",
                                                   self.print_selected_employee_task)
-        self.btn_emp_print.pack(side=tk.LEFT, padx=(0, 7))
+        self.btn_emp_print.pack(side=self._side(tk.LEFT), padx=(0, 7))
         self.btn_emp_edit = self._toolbar_button(tools, "✏️ Edit",
                                                  self.edit_selected_employee)
-        self.btn_emp_edit.pack(side=tk.LEFT, padx=(0, 7))
+        self.btn_emp_edit.pack(side=self._side(tk.LEFT), padx=(0, 7))
         self.btn_emp_delete = self._toolbar_button(tools, "🗑️ Delete",
                                                    self.delete_selected_employee, danger=True)
-        self.btn_emp_delete.pack(side=tk.LEFT)
+        self.btn_emp_delete.pack(side=self._side(tk.LEFT))
 
         table_card = self._neu_card(sec, dict(fill=tk.BOTH, expand=True), padx=14, pady=12)
         self.tree_employees = ttk.Treeview(table_card, columns=self.emp_headers, show="headings")
         for c in self.emp_headers:
             self.tree_employees.heading(c, text=c.upper())
             self.tree_employees.column(c, width=120)
+        self._apply_tree_direction(self.tree_employees, self.emp_headers)
         self.tree_employees.pack(fill=tk.BOTH, expand=True)
 
     # ==========================================
@@ -1474,30 +1735,30 @@ class AtelierERPApp(tk.Tk):
             sec, "Production Calendar", "Deliveries due, by day")
 
         nav = tk.Frame(hdr_right, bg=self.colors["bg_body"])
-        nav.pack(side=tk.RIGHT)
+        nav.pack(side=self._side(tk.RIGHT))
         self.btn_cal_today = self._toolbar_button(nav, "Today", self.calendar_today)
-        self.btn_cal_today.pack(side=tk.LEFT, padx=(0, 7))
-        self._toolbar_button(nav, "‹", lambda: self.shift_calendar_month(-1)).pack(side=tk.LEFT, padx=(0, 4))
-        self._toolbar_button(nav, "›", lambda: self.shift_calendar_month(1)).pack(side=tk.LEFT)
+        self.btn_cal_today.pack(side=self._side(tk.LEFT), padx=(0, 7))
+        self._toolbar_button(nav, "‹", lambda: self.shift_calendar_month(-1)).pack(side=self._side(tk.LEFT), padx=(0, 4))
+        self._toolbar_button(nav, "›", lambda: self.shift_calendar_month(1)).pack(side=self._side(tk.LEFT))
 
         # Workload strip: the three numbers a shop actually plans against.
         strip = tk.Frame(sec, bg=self.colors["bg_body"])
         strip.pack(fill=tk.X, pady=(0, 12))
         self.lbl_cal_stat_month, self.lbl_cal_stat_month_cap = self._stat_tile(
-            strip, dict(side=tk.LEFT, expand=True, fill=tk.X, padx=(0, 7)),
+            strip, dict(side=self._side(tk.LEFT), expand=True, fill=tk.X, padx=(0, 7)),
             "📅", 0, "Due This Month")
         self.lbl_cal_stat_week, self.lbl_cal_stat_week_cap = self._stat_tile(
-            strip, dict(side=tk.LEFT, expand=True, fill=tk.X, padx=7),
+            strip, dict(side=self._side(tk.LEFT), expand=True, fill=tk.X, padx=7),
             "⏳", 0, "Due In 7 Days")
         self.lbl_cal_stat_late, self.lbl_cal_stat_late_cap = self._stat_tile(
-            strip, dict(side=tk.LEFT, expand=True, fill=tk.X, padx=(7, 0)),
+            strip, dict(side=self._side(tk.LEFT), expand=True, fill=tk.X, padx=(7, 0)),
             "⚠️", 0, "Overdue")
 
         card = self._neu_card(sec, dict(fill=tk.BOTH, expand=True), padx=16, pady=14)
         bar = tk.Frame(card, bg=self.colors["bg_card"])
         bar.pack(fill=tk.X, pady=(0, 10))
         self.lbl_cal_month = self._section_label(bar, "MONTH")
-        self.lbl_cal_month.pack(side=tk.LEFT)
+        self.lbl_cal_month.pack(side=self._side(tk.LEFT))
 
         self.cal_grid = tk.Frame(card, bg=self.colors["bg_card"])
         self.cal_grid.pack(fill=tk.BOTH, expand=True)
@@ -1574,14 +1835,22 @@ class AtelierERPApp(tk.Tk):
         today = datetime.now().date()
         t = {**TRANSLATIONS["en"], **TRANSLATIONS.get(self.current_lang, {})}
 
-        self.lbl_cal_month.configure(text=self._track(
-            "%s %d" % (_calendar.month_name[self.cal_month], self.cal_year)))
+        # calendar.month_name follows the C locale, which is English here no
+        # matter which pack is active, so the names come from the pack.
+        months = t.get("cal_months")
+        month_name = (months[self.cal_month - 1] if months
+                      else _calendar.month_name[self.cal_month])
+        self.lbl_cal_month.configure(
+            text=self._track("%s %d" % (month_name, self.cal_year)))
 
-        # Weekday header row.
-        for col, day in enumerate(("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")):
+        # Weekday header row. The week itself reads the other way in an RTL
+        # layout, so the column index is mirrored as well as the text.
+        for col, day in enumerate(t.get("cal_days",
+                                        ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"))):
             tk.Label(self.cal_grid, text=self._track(day), font=(FONT_FAMILY, 7, "bold"),
                      bg=self.colors["bg_card"], fg=self.colors["text_4"]).grid(
-                row=0, column=col, sticky="w", padx=3, pady=(0, 4))
+                row=0, column=self._grid_col(col), sticky=self._anchor("w"),
+                padx=3, pady=(0, 4))
 
         weeks = _calendar.Calendar(firstweekday=0).monthdatescalendar(
             self.cal_year, self.cal_month)
@@ -1594,7 +1863,8 @@ class AtelierERPApp(tk.Tk):
                     tk.Frame(self.cal_grid, bg=self.colors["bg_card"]),
                     dict(fill=tk.BOTH, expand=True), padx=7, pady=5)
                 holder = cell.master.master
-                holder.grid(row=r, column=c, sticky="nsew", padx=3, pady=3)
+                holder.grid(row=r, column=self._grid_col(c), sticky="nsew",
+                            padx=3, pady=3)
 
                 head = tk.Frame(cell, bg=self.colors["well"])
                 head.pack(fill=tk.X)
@@ -1605,27 +1875,27 @@ class AtelierERPApp(tk.Tk):
                 tk.Label(head, text=str(day.day), font=(FONT_FAMILY, 9,
                          "bold" if day == today else "normal"),
                          bg=self.colors["well"],
-                         fg=PRIMARY if day == today else day_fg).pack(side=tk.LEFT)
+                         fg=PRIMARY if day == today else day_fg).pack(side=self._side(tk.LEFT))
                 if due:
                     StatusPill(head, str(len(due)),
                                TERRACOTTA if day < today else GAUGE_PROGRESS,
                                self.colors["well"], self.colors["bg_card"],
                                self.colors["text_main"], height=17, pad=6,
-                               dot=5).pack(side=tk.RIGHT)
+                               dot=5, rtl=self.is_rtl).pack(side=self._side(tk.RIGHT))
 
                 for o in due[:3]:
                     name = clean_val(o.get("customer_id"))
                     match = next((clean_val(x.get("name")) for x in self.customers
                                   if clean_val(x.get("id")) == name), name)
                     tk.Label(cell, text="· " + (match or "—"),
-                             font=(FONT_FAMILY, 7), anchor="w",
+                             font=(FONT_FAMILY, 7), anchor=self._anchor("w"),
                              bg=self.colors["well"], fg=self.colors["text_muted"]
-                             ).pack(anchor="w", fill=tk.X)
+                             ).pack(anchor=self._anchor("w"), fill=tk.X)
                 if len(due) > 3:
                     tk.Label(cell, text="+%d more" % (len(due) - 3),
-                             font=(FONT_FAMILY, 7), anchor="w",
+                             font=(FONT_FAMILY, 7), anchor=self._anchor("w"),
                              bg=self.colors["well"], fg=self.colors["text_3"]
-                             ).pack(anchor="w", fill=tk.X)
+                             ).pack(anchor=self._anchor("w"), fill=tk.X)
 
         month_due = sum(len(v) for k, v in buckets.items()
                         if k.year == self.cal_year and k.month == self.cal_month)
@@ -1651,35 +1921,35 @@ class AtelierERPApp(tk.Tk):
             sec, "Inventory", "Fabric and trim stock on hand")
         self.btn_inv_add = self._primary_button(hdr_right, "+ Add Item",
                                                 self.open_add_inventory_modal)
-        self.btn_inv_add.pack(side=tk.RIGHT)
+        self.btn_inv_add.pack(side=self._side(tk.RIGHT))
 
         tools = tk.Frame(sec, bg=self.colors["bg_body"])
         tools.pack(fill=tk.X, pady=(0, 12))
         self.btn_inv_in = self._toolbar_button(tools, "➕ Stock In",
                                                lambda: self.adjust_inventory(1))
-        self.btn_inv_in.pack(side=tk.LEFT, padx=(0, 7))
+        self.btn_inv_in.pack(side=self._side(tk.LEFT), padx=(0, 7))
         self.btn_inv_out = self._toolbar_button(tools, "➖ Stock Out",
                                                 lambda: self.adjust_inventory(-1))
-        self.btn_inv_out.pack(side=tk.LEFT, padx=(0, 7))
+        self.btn_inv_out.pack(side=self._side(tk.LEFT), padx=(0, 7))
         self.btn_inv_delete = self._toolbar_button(tools, "🗑️ Delete",
                                                    self.delete_selected_inventory,
                                                    danger=True)
-        self.btn_inv_delete.pack(side=tk.LEFT)
+        self.btn_inv_delete.pack(side=self._side(tk.LEFT))
 
         # --- Summary strip ---
         strip = tk.Frame(sec, bg=self.colors["bg_body"])
         strip.pack(fill=tk.X, pady=(0, 12))
         self.lbl_inv_stat_items, self.lbl_inv_stat_items_cap = self._stat_tile(
-            strip, dict(side=tk.LEFT, expand=True, fill=tk.X, padx=(0, 7)),
+            strip, dict(side=self._side(tk.LEFT), expand=True, fill=tk.X, padx=(0, 7)),
             "📦", 0, "Items Tracked")
         self.lbl_inv_stat_units, self.lbl_inv_stat_units_cap = self._stat_tile(
-            strip, dict(side=tk.LEFT, expand=True, fill=tk.X, padx=7),
+            strip, dict(side=self._side(tk.LEFT), expand=True, fill=tk.X, padx=7),
             "🧶", 0, "Total Units")
         self.lbl_inv_stat_low, self.lbl_inv_stat_low_cap = self._stat_tile(
-            strip, dict(side=tk.LEFT, expand=True, fill=tk.X, padx=7),
+            strip, dict(side=self._side(tk.LEFT), expand=True, fill=tk.X, padx=7),
             "⚠️", 0, "Low Stock")
         self.lbl_inv_stat_out, self.lbl_inv_stat_out_cap = self._stat_tile(
-            strip, dict(side=tk.LEFT, expand=True, fill=tk.X, padx=(7, 0)),
+            strip, dict(side=self._side(tk.LEFT), expand=True, fill=tk.X, padx=(7, 0)),
             "🚫", 0, "Out Of Stock")
 
         table_card = self._neu_card(sec, dict(fill=tk.BOTH, expand=True), padx=14, pady=12)
@@ -1688,6 +1958,7 @@ class AtelierERPApp(tk.Tk):
         for c in self.inv_headers:
             self.tree_inventory.heading(c, text=c.replace("_", " ").upper())
             self.tree_inventory.column(c, width=110)
+        self._apply_tree_direction(self.tree_inventory, self.inv_headers)
         self.tree_inventory.pack(fill=tk.BOTH, expand=True)
         self.tree_inventory.tag_configure(
             "low", foreground=TAN if self.current_theme == "light" else GAUGE_PROGRESS)
@@ -1796,18 +2067,18 @@ class AtelierERPApp(tk.Tk):
         entries = {}
         tk.Label(dlg, text="📦 New Inventory Item", font=(FONT_FAMILY, 13, "bold"),
                  bg=self.colors["bg_card"], fg=self.colors["text_main"]).pack(
-            anchor="w", padx=22, pady=(20, 14))
+            anchor=self._anchor("w"), padx=22, pady=(20, 14))
         for key, label in fields:
             row = tk.Frame(dlg, bg=self.colors["bg_card"])
             row.pack(fill=tk.X, padx=22, pady=4)
-            tk.Label(row, text=label, width=16, anchor="w", font=(FONT_FAMILY, 9),
-                     bg=self.colors["bg_card"], fg=self.colors["text_muted"]).pack(side=tk.LEFT)
+            tk.Label(row, text=label, width=16, anchor=self._anchor("w"), font=(FONT_FAMILY, 9),
+                     bg=self.colors["bg_card"], fg=self.colors["text_muted"]).pack(side=self._side(tk.LEFT))
             ent = tk.Entry(row, font=(FONT_FAMILY, 10), bg=self.colors["well"],
                            fg=self.colors["text_main"], relief="flat",
                            insertbackground=self.colors["text_main"],
                            highlightthickness=1,
                            highlightbackground=self.colors["border"])
-            ent.pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=3)
+            ent.pack(side=self._side(tk.LEFT), fill=tk.X, expand=True, ipady=3)
             entries[key] = ent
 
         def save():
@@ -1834,7 +2105,7 @@ class AtelierERPApp(tk.Tk):
 
         btns = tk.Frame(dlg, bg=self.colors["bg_card"])
         btns.pack(fill=tk.X, padx=22, pady=(16, 20))
-        self._primary_button(btns, "Save Item", save).pack(side=tk.RIGHT)
+        self._primary_button(btns, "Save Item", save).pack(side=self._side(tk.RIGHT))
         self.inv_modal_entries = entries
         self.inv_modal = dlg
 
@@ -1853,9 +2124,9 @@ class AtelierERPApp(tk.Tk):
         hdr = tk.Frame(sec, bg=self.colors["bg_body"])
         hdr.pack(fill=tk.X, padx=2, pady=(2, 14))
         self.lbl_fin_title = tk.Label(hdr, text="Finance", font=(FONT_FAMILY, 19), bg=self.colors["bg_body"], fg=self.colors["text_main"])
-        self.lbl_fin_title.pack(anchor="w")
+        self.lbl_fin_title.pack(anchor=self._anchor("w"))
         self.lbl_fin_sub = tk.Label(hdr, text="Paid, remaining and debt across all orders", font=(FONT_FAMILY, 9), bg=self.colors["bg_body"], fg=self.colors["text_muted"])
-        self.lbl_fin_sub.pack(anchor="w", pady=(2, 0))
+        self.lbl_fin_sub.pack(anchor=self._anchor("w"), pady=(2, 0))
 
         cards_row = tk.Frame(sec, bg=self.colors["bg_body"])
         cards_row.pack(fill=tk.X, pady=(0, 12))
@@ -1866,16 +2137,16 @@ class AtelierERPApp(tk.Tk):
         def fin_card(pack_opts, caption, color):
             card = self._neu_card(cards_row, pack_opts, padx=18, pady=15)
             box = tk.Frame(card, bg=self.colors["bg_card"])
-            box.pack(side=tk.LEFT, anchor="w")
+            box.pack(side=self._side(tk.LEFT), anchor=self._anchor("w"))
             cap = self._section_label(box, caption)
-            cap.pack(anchor="w")
+            cap.pack(anchor=self._anchor("w"))
             val = tk.Label(box, text="PKR 0.00", font=(FONT_FAMILY, 17),
                            bg=self.colors["bg_card"], fg=self.colors["text_main"])
-            val.pack(anchor="w", pady=(4, 0))
+            val.pack(anchor=self._anchor("w"), pady=(4, 0))
             chart = CircularDonutChart(card, size=72, ring_color=color,
                                        bg_color=self.colors["well"], stroke_width=8,
                                        theme_colors=self.colors)
-            chart.pack(side=tk.RIGHT)
+            chart.pack(side=self._side(tk.RIGHT))
             pct = tk.Label(chart, text="0%", font=(FONT_FAMILY, 9),
                            bg=self.colors["bg_chart"], fg=self.colors["text_muted"])
             pct.place(relx=0.5, rely=0.5, anchor="center")
@@ -1883,13 +2154,13 @@ class AtelierERPApp(tk.Tk):
 
         (self.lbl_fin_card_paid_title, self.lbl_fin_card_paid_val,
          self.chart_fin_card_paid, self.lbl_fin_card_paid_pct) = fin_card(
-            dict(side=tk.LEFT, expand=True, fill=tk.X, padx=(0, 7)), "TOTAL PAID", SAGE)
+            dict(side=self._side(tk.LEFT), expand=True, fill=tk.X, padx=(0, 7)), "TOTAL PAID", SAGE)
         (self.lbl_fin_card_remaining_title, self.lbl_fin_card_remaining_val,
          self.chart_fin_card_remaining, self.lbl_fin_card_remaining_pct) = fin_card(
-            dict(side=tk.LEFT, expand=True, fill=tk.X, padx=7), "TOTAL REMAINING", GAUGE_PROGRESS)
+            dict(side=self._side(tk.LEFT), expand=True, fill=tk.X, padx=7), "TOTAL REMAINING", GAUGE_PROGRESS)
         (self.lbl_fin_card_debt_title, self.lbl_fin_card_debt_val,
          self.chart_fin_card_debt, self.lbl_fin_card_debt_pct) = fin_card(
-            dict(side=tk.LEFT, expand=True, fill=tk.X, padx=(7, 0)), "TOTAL DEBT", TERRACOTTA)
+            dict(side=self._side(tk.LEFT), expand=True, fill=tk.X, padx=(7, 0)), "TOTAL DEBT", TERRACOTTA)
 
         # --- Tab bar: All / Done / Due / Add Payment ---
         tab_bar = tk.Frame(sec, bg=self.colors["bg_card"])
@@ -1901,7 +2172,7 @@ class AtelierERPApp(tk.Tk):
             b = tk.Button(tab_bar, text=f"{icon} {TRANSLATIONS[self.current_lang][lang_key]}",
                          font=(FONT_FAMILY, 9, "bold"), bd=0, padx=14, pady=6, cursor="hand2",
                          command=lambda k=key: self.set_finance_tab(k))
-            b.pack(side=tk.LEFT, padx=(0, 6))
+            b.pack(side=self._side(tk.LEFT), padx=(0, 6))
             self.fin_tab_buttons[key] = (b, lang_key, icon)
 
         # --- Ledger table (All / Done / Due) ---
@@ -1910,7 +2181,7 @@ class AtelierERPApp(tk.Tk):
         tbl_bar = tk.Frame(self.fin_ledger_container, bg=self.colors["bg_card"])
         tbl_bar.pack(fill=tk.X, pady=(8, 8))
         self.lbl_fin_tbl_head = tk.Label(tbl_bar, text="Order Finance Ledger", font=(FONT_FAMILY, 12, "bold"), bg=self.colors["bg_card"], fg=self.colors["text_main"])
-        self.lbl_fin_tbl_head.pack(side=tk.LEFT)
+        self.lbl_fin_tbl_head.pack(side=self._side(tk.LEFT))
 
         table_frame = tk.Frame(self.fin_ledger_container, bg=self.colors["bg_card"])
         table_frame.pack(fill=tk.BOTH, expand=True)
@@ -1920,6 +2191,7 @@ class AtelierERPApp(tk.Tk):
         for c in self.fin_columns:
             self.tree_finance.heading(c, text=c.replace("_", " ").upper())
             self.tree_finance.column(c, width=100)
+        self._apply_tree_direction(self.tree_finance, self.fin_columns)
         self.tree_finance.pack(fill=tk.BOTH, expand=True)
 
         self.tree_finance.tag_configure("has_debt", foreground=DANGER if self.current_theme == "light" else TERRACOTTA)
@@ -1929,15 +2201,15 @@ class AtelierERPApp(tk.Tk):
         self.fin_add_container = tk.Frame(sec, bg=self.colors["bg_card"])
         add_card = self._glass_card(self.fin_add_container, dict(fill=tk.X), padx=20, pady=18, bg_key="bg_card")
         self.lbl_fin_add_heading = tk.Label(add_card, text="➕ Record a Payment", font=(FONT_FAMILY, 12, "bold"), bg=self.colors["bg_card"], fg=self.colors["text_main"])
-        self.lbl_fin_add_heading.pack(anchor="w", pady=(0, 12))
+        self.lbl_fin_add_heading.pack(anchor=self._anchor("w"), pady=(0, 12))
 
         self.lbl_fin_add_order = tk.Label(add_card, text="Order with a due balance:", font=(FONT_FAMILY, 9, "bold"), bg=self.colors["bg_card"], fg=self.colors["text_main"])
-        self.lbl_fin_add_order.pack(anchor="w")
+        self.lbl_fin_add_order.pack(anchor=self._anchor("w"))
         self.cbo_fin_pay_order = ttk.Combobox(add_card, state="readonly", font=(FONT_FAMILY, 10))
         self.cbo_fin_pay_order.pack(fill=tk.X, pady=(4, 12))
 
         self.lbl_fin_add_amount = tk.Label(add_card, text="Payment Amount (PKR):", font=(FONT_FAMILY, 9, "bold"), bg=self.colors["bg_card"], fg=self.colors["text_main"])
-        self.lbl_fin_add_amount.pack(anchor="w")
+        self.lbl_fin_add_amount.pack(anchor=self._anchor("w"))
         self.ent_fin_pay_amount = tk.Entry(add_card, font=(FONT_FAMILY, 11),
                                            bg=self.colors["bg_body"], fg=self.colors["text_main"],
                                            insertbackground=self.colors["text_main"], relief="flat",
@@ -2112,28 +2384,36 @@ class AtelierERPApp(tk.Tk):
         hdr = tk.Frame(sec, bg=self.colors["bg_card"])
         hdr.pack(fill=tk.X, padx=24, pady=(20, 4))
         self.lbl_admin_title = tk.Label(hdr, text="Settings", font=(FONT_FAMILY, 16, "bold"), bg=self.colors["bg_card"], fg=self.colors["text_main"])
-        self.lbl_admin_title.pack(anchor="w")
+        self.lbl_admin_title.pack(anchor=self._anchor("w"))
         self.lbl_admin_sub = tk.Label(hdr, text="Theme, language, garments & employee roles", font=(FONT_FAMILY, 9), bg=self.colors["bg_card"], fg=self.colors["text_muted"])
-        self.lbl_admin_sub.pack(anchor="w")
+        self.lbl_admin_sub.pack(anchor=self._anchor("w"))
 
         cards_frame = tk.Frame(sec, bg=self.colors["bg_card"])
         cards_frame.pack(fill=tk.BOTH, expand=True, padx=24, pady=10)
 
-        # Row 1: Theme + Language
+        # Row 1: Theme + Display Mode + Language.
+        # These three cards are sized by their content, so they must be packed
+        # fill=X rather than fill=BOTH: _rounded_surface only grows a canvas to
+        # fit its contents when pack is not already stretching it vertically,
+        # and this row -- which does not expand -- has no height to lend them.
+        # With fill=BOTH they collapsed to a sliver and the theme and language
+        # controls were invisible on the Settings page.
         row1 = tk.Frame(cards_frame, bg=self.colors["bg_card"])
         row1.pack(fill=tk.X, pady=(0, 10))
 
-        c_theme = self._glass_card(row1, dict(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 6)))
+        c_theme = self._glass_card(row1, dict(side=self._side(tk.LEFT), fill=tk.X, expand=True, padx=(0, 6)))
         self.lbl_theme_label = tk.Label(c_theme, text="🛠️ System Theme", font=(FONT_FAMILY, 10, "bold"), bg=self.colors["bg_chart"], fg=self.colors["text_main"])
-        self.lbl_theme_label.pack(anchor="w", pady=(0, 8))
-        self.cbo_theme = ttk.Combobox(c_theme, values=["Light Mode ☀️", "Dark Mode 🌙"], state="readonly")
+        self.lbl_theme_label.pack(anchor=self._anchor("w"), pady=(0, 8))
+        self.cbo_theme = ttk.Combobox(c_theme, state="readonly",
+                                      values=[self._theme_label("light"),
+                                              self._theme_label("dark")])
         self.cbo_theme.current(0 if self.current_theme == "light" else 1)
         self.cbo_theme.pack(fill=tk.X, pady=(2, 4))
         self.cbo_theme.bind("<<ComboboxSelected>>", self.change_theme)
 
-        c_display = self._glass_card(row1, dict(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=6))
+        c_display = self._glass_card(row1, dict(side=self._side(tk.LEFT), fill=tk.X, expand=True, padx=6))
         self.lbl_display_label = tk.Label(c_display, text="🖥️ Display Mode", font=(FONT_FAMILY, 10, "bold"), bg=self.colors["bg_chart"], fg=self.colors["text_main"])
-        self.lbl_display_label.pack(anchor="w", pady=(0, 8))
+        self.lbl_display_label.pack(anchor=self._anchor("w"), pady=(0, 8))
         self.cbo_display = ttk.Combobox(c_display, state="readonly",
                                         values=[self._display_mode_label("fullscreen"),
                                                 self._display_mode_label("windowed")])
@@ -2143,11 +2423,11 @@ class AtelierERPApp(tk.Tk):
         self.lbl_display_hint = tk.Label(c_display, text="F11 toggles · Esc exits full screen",
                                          font=(FONT_FAMILY, 8), bg=self.colors["bg_chart"],
                                          fg=self.colors["text_3"])
-        self.lbl_display_hint.pack(anchor="w")
+        self.lbl_display_hint.pack(anchor=self._anchor("w"))
 
-        c_lang = self._glass_card(row1, dict(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(6, 0)))
+        c_lang = self._glass_card(row1, dict(side=self._side(tk.LEFT), fill=tk.X, expand=True, padx=(6, 0)))
         self.lbl_language_label = tk.Label(c_lang, text="🌐 Language / زبان", font=(FONT_FAMILY, 10, "bold"), bg=self.colors["bg_chart"], fg=self.colors["text_main"])
-        self.lbl_language_label.pack(anchor="w", pady=(0, 8))
+        self.lbl_language_label.pack(anchor=self._anchor("w"), pady=(0, 8))
         self.cbo_lang = ttk.Combobox(c_lang, values=[label for _, label in LANGUAGE_OPTIONS], state="readonly")
         if self.current_lang in [code for code, _ in LANGUAGE_OPTIONS]:
             self.cbo_lang.current([code for code, _ in LANGUAGE_OPTIONS].index(self.current_lang))
@@ -2160,17 +2440,17 @@ class AtelierERPApp(tk.Tk):
         row2 = tk.Frame(cards_frame, bg=self.colors["bg_card"])
         row2.pack(fill=tk.BOTH, expand=True)
 
-        c_garments = self._glass_card(row2, dict(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 6)))
+        c_garments = self._glass_card(row2, dict(side=self._side(tk.LEFT), fill=tk.BOTH, expand=True, padx=(0, 6)))
         self.lbl_admin_card_garments = tk.Label(c_garments, text=TRANSLATIONS[self.current_lang].get("admin_card_garments", "🧵 Garment Types"), font=(FONT_FAMILY, 10, "bold"), bg=self.colors["bg_chart"], fg=self.colors["text_main"])
-        self.lbl_admin_card_garments.pack(anchor="w", pady=(0, 8))
+        self.lbl_admin_card_garments.pack(anchor=self._anchor("w"), pady=(0, 8))
 
         list_wrap_g = tk.Frame(c_garments, bg=self.colors["bg_chart"])
         list_wrap_g.pack(fill=tk.BOTH, expand=True)
         self.lst_garments = tk.Listbox(list_wrap_g, bg=self.colors["bg_card"], fg=self.colors["text_main"], selectbackground=PRIMARY, selectforeground="white", highlightthickness=1, highlightbackground=self.colors["border"], font=(FONT_FAMILY, 9))
         sb_g = ttk.Scrollbar(list_wrap_g, orient=tk.VERTICAL, command=self.lst_garments.yview)
         self.lst_garments.configure(yscrollcommand=sb_g.set)
-        self.lst_garments.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        sb_g.pack(side=tk.RIGHT, fill=tk.Y)
+        self.lst_garments.pack(side=self._side(tk.LEFT), fill=tk.BOTH, expand=True)
+        sb_g.pack(side=self._side(tk.RIGHT), fill=tk.Y)
 
         ent_row_g = tk.Frame(c_garments, bg=self.colors["bg_chart"])
         ent_row_g.pack(fill=tk.X, pady=(8, 0))
@@ -2178,23 +2458,23 @@ class AtelierERPApp(tk.Tk):
                                         bg=self.colors["bg_body"], fg=self.colors["text_main"],
                                         insertbackground=self.colors["text_main"], relief="flat",
                                         highlightthickness=1, highlightbackground=self.colors["border"])
-        self.ent_new_garment.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 6))
+        self.ent_new_garment.pack(side=self._side(tk.LEFT), fill=tk.X, expand=True, padx=(0, 6))
         self.btn_add_garment = tk.Button(ent_row_g, text=TRANSLATIONS[self.current_lang].get("btn_item_add", "➕ Add"), bg=PRIMARY, fg="white", font=(FONT_FAMILY, 8, "bold"), bd=0, padx=10, pady=4, cursor="hand2", command=self.add_garment_type)
-        self.btn_add_garment.pack(side=tk.LEFT, padx=(0, 4))
+        self.btn_add_garment.pack(side=self._side(tk.LEFT), padx=(0, 4))
         self.btn_remove_garment = tk.Button(ent_row_g, text=TRANSLATIONS[self.current_lang].get("btn_item_remove", "✖ Remove"), bg=DANGER, fg="white", font=(FONT_FAMILY, 8, "bold"), bd=0, padx=10, pady=4, cursor="hand2", command=self.remove_garment_type)
-        self.btn_remove_garment.pack(side=tk.LEFT)
+        self.btn_remove_garment.pack(side=self._side(tk.LEFT))
 
-        c_roles = self._glass_card(row2, dict(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(6, 0)))
+        c_roles = self._glass_card(row2, dict(side=self._side(tk.LEFT), fill=tk.BOTH, expand=True, padx=(6, 0)))
         self.lbl_admin_card_roles = tk.Label(c_roles, text=TRANSLATIONS[self.current_lang].get("admin_card_roles", "👔 Employee Roles"), font=(FONT_FAMILY, 10, "bold"), bg=self.colors["bg_chart"], fg=self.colors["text_main"])
-        self.lbl_admin_card_roles.pack(anchor="w", pady=(0, 8))
+        self.lbl_admin_card_roles.pack(anchor=self._anchor("w"), pady=(0, 8))
 
         list_wrap_r = tk.Frame(c_roles, bg=self.colors["bg_chart"])
         list_wrap_r.pack(fill=tk.BOTH, expand=True)
         self.lst_roles = tk.Listbox(list_wrap_r, bg=self.colors["bg_card"], fg=self.colors["text_main"], selectbackground=PRIMARY, selectforeground="white", highlightthickness=1, highlightbackground=self.colors["border"], font=(FONT_FAMILY, 9))
         sb_r = ttk.Scrollbar(list_wrap_r, orient=tk.VERTICAL, command=self.lst_roles.yview)
         self.lst_roles.configure(yscrollcommand=sb_r.set)
-        self.lst_roles.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        sb_r.pack(side=tk.RIGHT, fill=tk.Y)
+        self.lst_roles.pack(side=self._side(tk.LEFT), fill=tk.BOTH, expand=True)
+        sb_r.pack(side=self._side(tk.RIGHT), fill=tk.Y)
 
         ent_row_r = tk.Frame(c_roles, bg=self.colors["bg_chart"])
         ent_row_r.pack(fill=tk.X, pady=(8, 0))
@@ -2202,11 +2482,11 @@ class AtelierERPApp(tk.Tk):
                                      bg=self.colors["bg_body"], fg=self.colors["text_main"],
                                      insertbackground=self.colors["text_main"], relief="flat",
                                      highlightthickness=1, highlightbackground=self.colors["border"])
-        self.ent_new_role.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 6))
+        self.ent_new_role.pack(side=self._side(tk.LEFT), fill=tk.X, expand=True, padx=(0, 6))
         self.btn_add_role = tk.Button(ent_row_r, text=TRANSLATIONS[self.current_lang].get("btn_item_add", "➕ Add"), bg=PRIMARY, fg="white", font=(FONT_FAMILY, 8, "bold"), bd=0, padx=10, pady=4, cursor="hand2", command=self.add_employee_role)
-        self.btn_add_role.pack(side=tk.LEFT, padx=(0, 4))
+        self.btn_add_role.pack(side=self._side(tk.LEFT), padx=(0, 4))
         self.btn_remove_role = tk.Button(ent_row_r, text=TRANSLATIONS[self.current_lang].get("btn_item_remove", "✖ Remove"), bg=DANGER, fg="white", font=(FONT_FAMILY, 8, "bold"), bd=0, padx=10, pady=4, cursor="hand2", command=self.remove_employee_role)
-        self.btn_remove_role.pack(side=tk.LEFT)
+        self.btn_remove_role.pack(side=self._side(tk.LEFT))
 
         self.refresh_settings_ui()
 
@@ -2299,17 +2579,17 @@ class AtelierERPApp(tk.Tk):
 
         info_frame = tk.Frame(dlg, bg=self.colors["bg_card"])
         info_frame.pack(fill=tk.X, padx=20)
-        tk.Label(info_frame, text=t["nc_name"], font=(FONT_FAMILY, 8, "bold"), bg=self.colors["bg_card"], fg=self.colors["text_muted"]).grid(row=0, column=0, sticky="w")
+        tk.Label(info_frame, text=t["nc_name"], font=(FONT_FAMILY, 8, "bold"), bg=self.colors["bg_card"], fg=self.colors["text_muted"]).grid(row=0, column=0, sticky=self._anchor("w"))
         e_name = tk.Entry(info_frame, bg=self.colors["bg_body"], fg=self.colors["text_main"],
                           insertbackground=self.colors["text_main"], relief="flat",
                           highlightthickness=1, highlightbackground=self.colors["border"])
         e_name.grid(row=0, column=1, padx=5, pady=5, sticky="ew")
-        tk.Label(info_frame, text=t["nc_phone"], font=(FONT_FAMILY, 8, "bold"), bg=self.colors["bg_card"], fg=self.colors["text_muted"]).grid(row=1, column=0, sticky="w")
+        tk.Label(info_frame, text=t["nc_phone"], font=(FONT_FAMILY, 8, "bold"), bg=self.colors["bg_card"], fg=self.colors["text_muted"]).grid(row=1, column=0, sticky=self._anchor("w"))
         e_phone = tk.Entry(info_frame, bg=self.colors["bg_body"], fg=self.colors["text_main"],
                            insertbackground=self.colors["text_main"], relief="flat",
                            highlightthickness=1, highlightbackground=self.colors["border"])
         e_phone.grid(row=1, column=1, padx=5, pady=5, sticky="ew")
-        tk.Label(info_frame, text=t["nc_address"], font=(FONT_FAMILY, 8, "bold"), bg=self.colors["bg_card"], fg=self.colors["text_muted"]).grid(row=2, column=0, sticky="w")
+        tk.Label(info_frame, text=t["nc_address"], font=(FONT_FAMILY, 8, "bold"), bg=self.colors["bg_card"], fg=self.colors["text_muted"]).grid(row=2, column=0, sticky=self._anchor("w"))
         e_address = tk.Entry(info_frame, bg=self.colors["bg_body"], fg=self.colors["text_main"],
                              insertbackground=self.colors["text_main"], relief="flat",
                              highlightthickness=1, highlightbackground=self.colors["border"])
@@ -2330,11 +2610,11 @@ class AtelierERPApp(tk.Tk):
         for idx, (lbl_key, key) in enumerate(fields):
             r = idx // 2
             c = (idx % 2) * 2
-            tk.Label(measure_frame, text=t[lbl_key], bg=self.colors["bg_card"], fg=self.colors["text_main"], font=(FONT_FAMILY, 8)).grid(row=r, column=c, padx=5, pady=5, sticky="e")
+            tk.Label(measure_frame, text=t[lbl_key], bg=self.colors["bg_card"], fg=self.colors["text_main"], font=(FONT_FAMILY, 8)).grid(row=r, column=c, padx=5, pady=5, sticky=self._anchor("e"))
             ent = tk.Entry(measure_frame, width=10, bg=self.colors["bg_body"], fg=self.colors["text_main"],
                            insertbackground=self.colors["text_main"], relief="flat",
                            highlightthickness=1, highlightbackground=self.colors["border"])
-            ent.grid(row=r, column=c + 1, padx=5, pady=5, sticky="w")
+            ent.grid(row=r, column=c + 1, padx=5, pady=5, sticky=self._anchor("w"))
             entries[key] = ent
 
         def save():
@@ -2371,17 +2651,17 @@ class AtelierERPApp(tk.Tk):
         cbo_cust = ttk.Combobox(f1, values=[f"{c['id']} - {c['name']}" for c in self.customers if c.get("name")], state="readonly")
         if cbo_cust["values"]:
             cbo_cust.current(0)
-        tk.Label(f1, text="Customer:", bg=self.colors["bg_card"], fg=self.colors["text_muted"]).pack(anchor="w"); cbo_cust.pack(fill=tk.X, pady=(0, 5))
+        tk.Label(f1, text="Customer:", bg=self.colors["bg_card"], fg=self.colors["text_muted"]).pack(anchor=self._anchor("w")); cbo_cust.pack(fill=tk.X, pady=(0, 5))
 
         cbo_garment = ttk.Combobox(f1, values=self.garment_types, state="readonly")
         if cbo_garment["values"]:
             cbo_garment.current(0)
-        tk.Label(f1, text="Garment:", bg=self.colors["bg_card"], fg=self.colors["text_muted"]).pack(anchor="w"); cbo_garment.pack(fill=tk.X, pady=(0, 5))
+        tk.Label(f1, text="Garment:", bg=self.colors["bg_card"], fg=self.colors["text_muted"]).pack(anchor=self._anchor("w")); cbo_garment.pack(fill=tk.X, pady=(0, 5))
 
         cbo_tailor = ttk.Combobox(f1, values=[e["name"] for e in self.employees if e.get("name")], state="readonly")
         if cbo_tailor["values"]:
             cbo_tailor.current(0)
-        tk.Label(f1, text="Assign Tailor:", bg=self.colors["bg_card"], fg=self.colors["text_muted"]).pack(anchor="w"); cbo_tailor.pack(fill=tk.X, pady=(0, 5))
+        tk.Label(f1, text="Assign Tailor:", bg=self.colors["bg_card"], fg=self.colors["text_muted"]).pack(anchor=self._anchor("w")); cbo_tailor.pack(fill=tk.X, pady=(0, 5))
 
         style_frame = tk.LabelFrame(dlg, text=" Visual Form Styles (as per JTQ slip) ", bg=self.colors["bg_card"], fg=PRIMARY, font=(FONT_FAMILY, 9, "bold"))
         style_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=10)
@@ -2401,26 +2681,26 @@ class AtelierERPApp(tk.Tk):
 
         # Left column: button/placket styles (باز بٹن / کڑ بٹن)
         label, opts = rows[0]
-        tk.Label(style_frame, text=label + ":", bg=self.colors["bg_card"], fg=self.colors["text_main"], font=(FONT_FAMILY, 8, "bold")).grid(row=0, column=0, padx=8, pady=8, sticky="e")
+        tk.Label(style_frame, text=label + ":", bg=self.colors["bg_card"], fg=self.colors["text_main"], font=(FONT_FAMILY, 8, "bold")).grid(row=0, column=0, padx=8, pady=8, sticky=self._anchor("e"))
         cb = ttk.Combobox(style_frame, values=opts, state="readonly", width=26)
         cb.current(0)
-        cb.grid(row=0, column=1, padx=8, pady=8, sticky="w")
+        cb.grid(row=0, column=1, padx=8, pady=8, sticky=self._anchor("w"))
         combos[label] = cb
 
         # Center column: Collar, Cuff, Pocket, Daman
         for r, (label, opts) in enumerate(rows[1:5], start=0):
-            tk.Label(style_frame, text=label + ":", bg=self.colors["bg_card"], fg=self.colors["text_main"], font=(FONT_FAMILY, 8, "bold")).grid(row=r, column=2, padx=8, pady=8, sticky="e")
+            tk.Label(style_frame, text=label + ":", bg=self.colors["bg_card"], fg=self.colors["text_main"], font=(FONT_FAMILY, 8, "bold")).grid(row=r, column=2, padx=8, pady=8, sticky=self._anchor("e"))
             cb = ttk.Combobox(style_frame, values=opts, state="readonly", width=26)
             cb.current(0)
-            cb.grid(row=r, column=3, padx=8, pady=8, sticky="w")
+            cb.grid(row=r, column=3, padx=8, pady=8, sticky=self._anchor("w"))
             combos[label] = cb
 
         # Bottom of the center column: Stitching (the 4 numbered options on the slip)
         label, opts = rows[5]
-        tk.Label(style_frame, text=label + ":", bg=self.colors["bg_card"], fg=self.colors["text_main"], font=(FONT_FAMILY, 8, "bold")).grid(row=5, column=2, padx=8, pady=8, sticky="e")
+        tk.Label(style_frame, text=label + ":", bg=self.colors["bg_card"], fg=self.colors["text_main"], font=(FONT_FAMILY, 8, "bold")).grid(row=5, column=2, padx=8, pady=8, sticky=self._anchor("e"))
         cb = ttk.Combobox(style_frame, values=opts, state="readonly", width=26)
         cb.current(0)
-        cb.grid(row=5, column=3, padx=8, pady=8, sticky="w")
+        cb.grid(row=5, column=3, padx=8, pady=8, sticky=self._anchor("w"))
         combos[label] = cb
 
         style_frame.columnconfigure(1, weight=1)
@@ -2464,17 +2744,17 @@ class AtelierERPApp(tk.Tk):
 
         f = tk.Frame(dlg, bg=self.colors["bg_card"])
         f.pack(fill=tk.X, padx=24)
-        tk.Label(f, text=t["emp_lbl_full_name"], font=(FONT_FAMILY, 8, "bold"), bg=self.colors["bg_card"], fg=self.colors["text_muted"]).grid(row=0, column=0, sticky="w", pady=4)
+        tk.Label(f, text=t["emp_lbl_full_name"], font=(FONT_FAMILY, 8, "bold"), bg=self.colors["bg_card"], fg=self.colors["text_muted"]).grid(row=0, column=0, sticky=self._anchor("w"), pady=4)
         e_name = tk.Entry(f, bg=self.colors["bg_body"], fg=self.colors["text_main"],
                           insertbackground=self.colors["text_main"], relief="flat",
                           highlightthickness=1, highlightbackground=self.colors["border"])
         e_name.grid(row=0, column=1, padx=8, pady=4, sticky="ew")
-        tk.Label(f, text=t["emp_lbl_phone"], font=(FONT_FAMILY, 8, "bold"), bg=self.colors["bg_card"], fg=self.colors["text_muted"]).grid(row=1, column=0, sticky="w", pady=4)
+        tk.Label(f, text=t["emp_lbl_phone"], font=(FONT_FAMILY, 8, "bold"), bg=self.colors["bg_card"], fg=self.colors["text_muted"]).grid(row=1, column=0, sticky=self._anchor("w"), pady=4)
         e_phone = tk.Entry(f, bg=self.colors["bg_body"], fg=self.colors["text_main"],
                            insertbackground=self.colors["text_main"], relief="flat",
                            highlightthickness=1, highlightbackground=self.colors["border"])
         e_phone.grid(row=1, column=1, padx=8, pady=4, sticky="ew")
-        tk.Label(f, text=t["emp_lbl_role"], font=(FONT_FAMILY, 8, "bold"), bg=self.colors["bg_card"], fg=self.colors["text_muted"]).grid(row=2, column=0, sticky="w", pady=4)
+        tk.Label(f, text=t["emp_lbl_role"], font=(FONT_FAMILY, 8, "bold"), bg=self.colors["bg_card"], fg=self.colors["text_muted"]).grid(row=2, column=0, sticky=self._anchor("w"), pady=4)
         cbo_role = ttk.Combobox(f, values=self.employee_roles, state="readonly")
         if cbo_role["values"]:
             cbo_role.current(0)
@@ -2518,13 +2798,13 @@ class AtelierERPApp(tk.Tk):
         f = tk.Frame(dlg, bg=self.colors["bg_card"])
         f.pack(fill=tk.BOTH, expand=True, padx=24)
 
-        tk.Label(f, text=t["task_lbl_staff_member"], font=(FONT_FAMILY, 8, "bold"), bg=self.colors["bg_card"], fg=self.colors["text_muted"]).pack(anchor="w", pady=(0, 2))
+        tk.Label(f, text=t["task_lbl_staff_member"], font=(FONT_FAMILY, 8, "bold"), bg=self.colors["bg_card"], fg=self.colors["text_muted"]).pack(anchor=self._anchor("w"), pady=(0, 2))
         cbo_emp = ttk.Combobox(f, values=[f"{e['id']} - {e['name']}" for e in self.employees if e.get("name")], state="readonly")
         if cbo_emp["values"]:
             cbo_emp.current(0)
         cbo_emp.pack(fill=tk.X, pady=(0, 8))
         if not cbo_emp["values"]:
-            tk.Label(f, text=t["task_lbl_no_staff"], bg=self.colors["bg_card"], fg=DANGER, font=(FONT_FAMILY, 8)).pack(anchor="w")
+            tk.Label(f, text=t["task_lbl_no_staff"], bg=self.colors["bg_card"], fg=DANGER, font=(FONT_FAMILY, 8)).pack(anchor=self._anchor("w"))
 
         # --- Order picker: open orders (not yet Delivered), labeled by
         # customer name — not a raw order id, so a tailor can find "who".
@@ -2536,11 +2816,11 @@ class AtelierERPApp(tk.Tk):
             cust_name = cust_by_id.get(clean_val(o.get("customer_id"))) or "Walk-in"
             order_labels[f"{oid} — {cust_name} ({clean_val(o.get('garment'))})"] = oid
 
-        tk.Label(f, text=t["task_lbl_order"], font=(FONT_FAMILY, 8, "bold"), bg=self.colors["bg_card"], fg=self.colors["text_muted"]).pack(anchor="w", pady=(6, 2))
+        tk.Label(f, text=t["task_lbl_order"], font=(FONT_FAMILY, 8, "bold"), bg=self.colors["bg_card"], fg=self.colors["text_muted"]).pack(anchor=self._anchor("w"), pady=(6, 2))
         cbo_order = ttk.Combobox(f, values=list(order_labels.keys()), state="readonly")
         cbo_order.pack(fill=tk.X, pady=(0, 8))
         if not order_labels:
-            tk.Label(f, text=t["task_lbl_no_orders"], bg=self.colors["bg_card"], fg=DANGER, font=(FONT_FAMILY, 8)).pack(anchor="w")
+            tk.Label(f, text=t["task_lbl_no_orders"], bg=self.colors["bg_card"], fg=DANGER, font=(FONT_FAMILY, 8)).pack(anchor=self._anchor("w"))
 
         # Read-only order-details block, filled in once an order is picked.
         details = self._glass_card(f, dict(fill=tk.X, pady=(0, 8)), padx=10, pady=8)
@@ -2554,14 +2834,14 @@ class AtelierERPApp(tk.Tk):
         for field, label_key in detail_specs:
             row = tk.Frame(details, bg=self.colors["bg_chart"])
             row.pack(fill=tk.X)
-            tk.Label(row, text=t[label_key] + ":", width=16, anchor="w", font=(FONT_FAMILY, 8),
-                    bg=self.colors["bg_chart"], fg=self.colors["text_muted"]).pack(side=tk.LEFT)
-            val_lbl = tk.Label(row, text="—", anchor="w", font=(FONT_FAMILY, 8, "bold"),
+            tk.Label(row, text=t[label_key] + ":", width=16, anchor=self._anchor("w"), font=(FONT_FAMILY, 8),
+                    bg=self.colors["bg_chart"], fg=self.colors["text_muted"]).pack(side=self._side(tk.LEFT))
+            val_lbl = tk.Label(row, text="—", anchor=self._anchor("w"), font=(FONT_FAMILY, 8, "bold"),
                                bg=self.colors["bg_chart"], fg=self.colors["text_main"])
-            val_lbl.pack(side=tk.LEFT, fill=tk.X, expand=True)
+            val_lbl.pack(side=self._side(tk.LEFT), fill=tk.X, expand=True)
             detail_vals[field] = val_lbl
 
-        tk.Label(f, text=t["task_lbl_task_note"], font=(FONT_FAMILY, 8, "bold"), bg=self.colors["bg_card"], fg=self.colors["text_muted"]).pack(anchor="w", pady=(4, 2))
+        tk.Label(f, text=t["task_lbl_task_note"], font=(FONT_FAMILY, 8, "bold"), bg=self.colors["bg_card"], fg=self.colors["text_muted"]).pack(anchor=self._anchor("w"), pady=(4, 2))
         e_task = tk.Entry(f, bg=self.colors["bg_body"], fg=self.colors["text_main"],
                           insertbackground=self.colors["text_main"], relief="flat",
                           highlightthickness=1, highlightbackground=self.colors["border"])
@@ -2662,7 +2942,7 @@ class AtelierERPApp(tk.Tk):
         fields = {}
         specs = (("name", "Name"), ("phone", "Phone"), ("address", "Address"))
         for row, (key, label) in enumerate(specs):
-            tk.Label(dlg, text=label + ":", font=(FONT_FAMILY, 8, "bold"), bg=self.colors["bg_card"], fg=self.colors["text_main"]).grid(row=row, column=0, padx=18, pady=10, sticky="w")
+            tk.Label(dlg, text=label + ":", font=(FONT_FAMILY, 8, "bold"), bg=self.colors["bg_card"], fg=self.colors["text_main"]).grid(row=row, column=0, padx=18, pady=10, sticky=self._anchor("w"))
             entry = tk.Entry(dlg, width=35, bg=self.colors["bg_body"], fg=self.colors["text_main"],
                              insertbackground=self.colors["text_main"], relief="flat",
                              highlightthickness=1, highlightbackground=self.colors["border"])
@@ -2741,7 +3021,7 @@ class AtelierERPApp(tk.Tk):
         specs = (("name", "emp_edit_lbl_name"), ("phone", "emp_edit_lbl_phone"), ("role", "emp_edit_lbl_role"),
                  ("status", "emp_edit_lbl_status"), ("current_task", "emp_edit_lbl_task"))
         for row, (key, label_key) in enumerate(specs):
-            tk.Label(dlg, text=t[label_key] + ":", font=(FONT_FAMILY, 8, "bold"), bg=self.colors["bg_card"], fg=self.colors["text_main"]).grid(row=row, column=0, padx=18, pady=8, sticky="w")
+            tk.Label(dlg, text=t[label_key] + ":", font=(FONT_FAMILY, 8, "bold"), bg=self.colors["bg_card"], fg=self.colors["text_main"]).grid(row=row, column=0, padx=18, pady=8, sticky=self._anchor("w"))
             entry = tk.Entry(dlg, width=34, bg=self.colors["bg_body"], fg=self.colors["text_main"],
                              insertbackground=self.colors["text_main"], relief="flat",
                              highlightthickness=1, highlightbackground=self.colors["border"])
@@ -2959,12 +3239,34 @@ class AtelierERPApp(tk.Tk):
     # ==========================================
     # LANGUAGE ENGINE
     # ==========================================
-    def on_language_change(self, event):
+    def on_language_change(self, event=None):
         selected_label = self.cbo_lang.get()
         label_to_code = {label: code for code, label in LANGUAGE_OPTIONS}
-        self.current_lang = label_to_code.get(selected_label, self.current_lang)
+        self.set_language(label_to_code.get(selected_label, self.current_lang))
+
+    def set_language(self, code):
+        """Switch language packs, rebuilding the layout if the reading
+        direction changes.
+
+        Re-labelling in place is enough between two same-direction packs.
+        Going English -> Urdu is different: every widget was packed to a
+        literal side and anchored to a literal compass point, and Tk has no
+        way to flip those after the fact. So a direction change tears the body
+        down and builds it again, the same way a theme change already does.
+        """
+        if code not in TRANSLATIONS:
+            return
+        was_rtl = self.is_rtl
+        self.current_lang = code
         self._app_state_for_current_data().save(lang=self.current_lang)
-        self.apply_language_pack()
+        if self.is_rtl != was_rtl and hasattr(self, "body_container"):
+            # Cached images are flattened against a surface colour and cropped
+            # per side; drop them so the mirrored layout rebuilds its own.
+            self.assets.release_theme_images()
+            self.body_container.destroy()
+            self.build_ui_layout()
+        else:
+            self.apply_language_pack()
 
     def apply_language_pack(self):
         # Some language packs are intentionally partial; preserve English labels
@@ -2976,6 +3278,34 @@ class AtelierERPApp(tk.Tk):
 
         for _, (btn, lang_key) in self.nav_buttons.items():
             btn.configure(text=t[lang_key])
+
+        # The sidebar chips carry translated words, so they move with the pack
+        # even on a same-direction switch (which does not rebuild anything).
+        if hasattr(self, "btn_quick_theme"):
+            is_dark = self.current_theme == "dark"
+            self.btn_quick_theme.configure(
+                text=("🌙 " + t.get("theme_dark_short", "Dark")) if is_dark
+                else ("☀️ " + t.get("theme_light_short", "Light")))
+        if hasattr(self, "btn_quick_lang"):
+            self.btn_quick_lang.configure(text="🌐 " + self.current_lang.upper())
+        if hasattr(self, "btn_mark_ready"):
+            self.btn_mark_ready.configure(
+                text=t.get("btn_mark_ready", "✔ Mark Ready"))
+
+        # Calendar: header, Today button and the three workload captions.
+        # refresh_calendar_ui() re-reads the pack itself, so it repaints the
+        # weekday row, the month name and every cell.
+        if hasattr(self, "lbl_cal_title"):
+            self.lbl_cal_title.configure(text=t.get("cal_title", "Production Calendar"))
+            self.lbl_cal_sub.configure(text=t.get("cal_sub", "Deliveries due, by day"))
+            self.btn_cal_today.configure(text=t.get("cal_today", "Today"))
+            self.lbl_cal_stat_month_cap.configure(
+                text=self._track(t.get("cal_due_month", "Due This Month")))
+            self.lbl_cal_stat_week_cap.configure(
+                text=self._track(t.get("cal_due_week", "Due In 7 Days")))
+            self.lbl_cal_stat_late_cap.configure(
+                text=self._track(t.get("cal_overdue", "Overdue")))
+            self.refresh_calendar_ui()
 
         self.lbl_dash_title.configure(text=t["dash_title"])
         self.lbl_dash_sub.configure(text=t["dash_sub"])
@@ -3040,6 +3370,24 @@ class AtelierERPApp(tk.Tk):
         self.lbl_admin_sub.configure(text=t["admin_sub"])
         self.lbl_theme_label.configure(text=t.get("theme_label", self.lbl_theme_label.cget("text")))
         self.lbl_language_label.configure(text=t.get("language_label", self.lbl_language_label.cget("text")))
+        # Display mode arrived after the language engine and was never wired
+        # into it, so its card stayed English in every pack.
+        if hasattr(self, "lbl_display_label"):
+            self.lbl_display_label.configure(text=t.get("display_label", "🖥️ Display Mode"))
+            self.lbl_display_hint.configure(
+                text=t.get("display_hint", "F11 toggles · Esc exits full screen"))
+        # Combobox *values* are translated too, so they are rebuilt and the
+        # current selection re-set -- otherwise the field would keep showing
+        # the previous language's wording until the user opened it.
+        if hasattr(self, "cbo_display"):
+            self.cbo_display.configure(values=[self._display_mode_label("fullscreen"),
+                                               self._display_mode_label("windowed")])
+            self.cbo_display.set(self._display_mode_label(
+                getattr(self, "display_mode", "fullscreen")))
+        if hasattr(self, "cbo_theme"):
+            self.cbo_theme.configure(values=[self._theme_label("light"),
+                                             self._theme_label("dark")])
+            self.cbo_theme.set(self._theme_label(self.current_theme))
         self.lbl_admin_card_garments.configure(text=t.get("admin_card_garments", self.lbl_admin_card_garments.cget("text")))
         self.lbl_admin_card_roles.configure(text=t.get("admin_card_roles", self.lbl_admin_card_roles.cget("text")))
         self.btn_add_garment.configure(text=t.get("btn_item_add", self.btn_add_garment.cget("text")))
