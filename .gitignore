@@ -1,0 +1,44 @@
+# ---------------------------------------------------------------------------
+# Live shop data -- deliberately NOT tracked.
+#
+# app/data/ holds the running business: real customer names and phone numbers,
+# order history, the finance ledger (finance.db) and the session cache. It is
+# user data, not source, and it must not end up in version control. A fresh
+# clone recreates the folder on first launch -- ExcelManager makes its data
+# dir, and ensure_file() writes the header row into each sheet.
+# ---------------------------------------------------------------------------
+app/data/
+data/
+
+# Virtualenvs (two of them live in-tree here)
+.venv/
+.venv-1/
+env/
+venv/
+
+# Python bytecode / caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Build / packaging
+build/
+dist/
+*.egg-info/
+
+# Local editor + tool state
+.claude/settings.local.json
+*.code-workspace
+
+# Windows shell cruft
+desktop.ini
+Thumbs.db
+ehthumbs.db
+
+# Scratch output
+*.tmp
+*.log
+*.bak

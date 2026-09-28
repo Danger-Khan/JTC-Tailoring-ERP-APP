@@ -1,0 +1,81 @@
+# 🧵 Jhagra Textile & Clothing — Atelier Ledger
+
+An elegant, lightweight Tkinter desktop application for managing garment tailoring orders, customer measurement cards, staff allocations, order finances, and live shop floor execution metrics.
+
+Built with a **neumorphic (soft UI)** design system ported from the JTC web app: raised cards and recessed wells on one warm-grey canvas, tracked uppercase captions, rounded status pills, and a pastel accent palette — in both a Light and a Dark theme, with all chrome living in a single floating sidebar.
+
+---
+
+## ✨ Features
+
+* **Neumorphic UI**: raised cards, inset wells, status pills, and a sage/blush/lavender accent strip on the sidebar. No top bar — the brand and clock live in the sidebar.
+* **📊 Analytics Dashboard**: three donut gauges sharing one card, counter tiles (orders / customers / tailors on duty), a Paid / Remaining / Debt finance snapshot with donuts, and an inset-row order ledger with status pills.
+* **💰 Finance**: per-bucket donuts on every total card, All / Done / Due filter tabs and an Add Payment form, backed by a local SQLite ledger (`finance.db`) mirrored from the orders spreadsheet.
+* **🧠 Remembers your settings**: theme, language, last open section, and window size persist across restarts.
+* **👤 Customer Hub**: contact profiles, address, and measurement cards (length, chest, waist, ...).
+* **📋 Staff & Task Allocation**: roles, duty status, and tasks linked to real orders.
+* **📅 Production Calendar**: month grid of deliveries due per day, with due-this-month / due-in-7-days / overdue counts.
+* **📦 Inventory**: stock on hand with a summary strip (items, units, low stock, out of stock) plus stock-in / stock-out.
+* **🖼️ Brand imagery**: shop sign as window icon and sidebar logo; owner photo as login backdrop, sidebar background and page watermark.
+* **🖥️ Full screen by default**, switchable to windowed in Settings (F11 toggles, Esc exits).
+* **⚙️ Settings**: theme, language, display mode, garment types, and employee roles in one screen.
+* **⏰ Real-time Header Clock**.
+
+---
+
+## 🛠️ Project Structure
+
+```text
+app/
+├── main_gui.py           # Primary Tkinter GUI entry point
+├── data/                 # Excel storage (incl. inventory.xlsx), finance.db, session cache
+├── Images/               # Shop sign + owner photos used across the UI
+├── utils/                # finance_db.py, app_state.py, assets.py, and other helpers
+├── lang/                 # Translation dictionaries (en, ur fully done; ps/zh/ru pending)
+├── changes/               # Dated changelog entries
+├── tests/                 # Unit + GUI smoke tests
+└── views/                 # Reusable Tkinter views
+README.md                  # Full project documentation
+```
+
+---
+
+## 🚀 Getting Started
+
+### Prerequisites
+
+* **Python 3.8+**, with the standard `tkinter` library (bundled on Windows/macOS installers).
+
+> **Linux users**: if `tkinter` isn't installed, `sudo apt-get install python3-tk`.
+
+### Running the Application
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install flask flask-cors openpyxl bcrypt filelock reportlab
+python main_gui.py
+```
+
+---
+
+## 🎨 Theme Reference
+
+| Token | Light | Dark | Usage |
+| --- | --- | --- | --- |
+| `bg_body` (canvas) | `#EBE7E2` | `#2A2927` | Page backdrop; also the fill of inset wells |
+| `bg_card` (surface) | `#EEEAE6` | `#323130` | Raised cards, sidebar |
+| `border` (line) | `#D9D3CC` | `#3A3835` | Hairline dividers |
+| `neu_light` / `neu_shadow` | `#FBF7F2` / `#CDC5BB` | `#3C3A38` / `#1C1B1A` | The lit top edge and shadowed bottom edge that give a card its depth |
+| Primary | `#3A3A3A` | same | Dark pill buttons, active nav |
+| Sage | `#2ECC8A` | same | Paid, done, ready |
+| Amber | `#FFCB6E` | same | In progress, remaining |
+| Lavender | `#C9B3F5` | same | Pending / not yet started |
+| Terracotta | `#FF8077` | same | Debt |
+| Danger | `#BD3228` | same | Destructive actions |
+
+---
+
+## ⚙️ Optional Flask Backend
+
+The desktop app is fully self-contained (Excel + SQLite, no server needed). A separate Flask API also exists under `app/routes/` for anyone who wants a REST layer on top of the same data; start it with `python run.py`. It defaults to `http://127.0.0.1:5000/api`.

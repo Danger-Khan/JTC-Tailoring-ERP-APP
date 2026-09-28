@@ -1,0 +1,21 @@
+# Jhagra Textile & Clothing ERP -- Python dependencies
+# Versions are the ones this build is verified against (Python 3.12, Windows).
+# Install:  python -m pip install -r requirements.txt
+
+# --- Desktop app (app/main_gui.py) -----------------------------------------
+# Tkinter itself ships with CPython -- nothing to install for the UI toolkit.
+openpyxl>=3.1.5        # every .xlsx sheet: customers, orders, employees, inventory
+pillow>=12.3.0         # brand imagery; also the image loader Tk itself cannot be
+                       # trusted with (Tk reads only GIF/PNG/PPM and goes by the
+                       # file extension, while app/Images holds renamed photos)
+reportlab>=4.0         # order-card / receipt PDF generation
+filelock>=3.32.3       # guards concurrent workbook writes
+psutil>=7.2.2          # runtime performance probes (app/utils/performance.py)
+
+# --- Web API (app/run.py, app/routes/) -------------------------------------
+# Optional: only needed to run the Flask side. The Tkinter app does not import
+# any of these.
+flask>=3.1.3
+flask-cors>=6.0.5
+werkzeug>=3.1.8
+bcrypt>=5.0.0          # password hashing for the API's auth routes

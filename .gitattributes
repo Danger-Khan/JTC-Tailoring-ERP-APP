@@ -1,0 +1,17 @@
+# Normalize line endings: the tree currently mixes LF and CRLF, which would
+# otherwise show up as whole-file diffs whenever it is edited on the other
+# platform. Text is stored LF in the repo and checked out native.
+* text=auto
+
+# Binary assets -- never touch these.
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.JPG  binary
+*.ico  binary
+*.xlsx binary
+*.db   binary
+*.pdf  binary
+
+# Keep shell scripts LF even on Windows checkouts, or bash rejects them.
+*.sh text eol=lf
