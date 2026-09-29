@@ -10,6 +10,11 @@
 app/data/
 data/
 
+# The signing key for session cookies and API tokens. Generated on first
+# run into the data directory (already ignored above); listed separately so
+# it stays ignored if JTC_DATA_DIR points somewhere else.
+.secret_key
+
 # Virtualenvs (two of them live in-tree here)
 .venv/
 .venv-1/

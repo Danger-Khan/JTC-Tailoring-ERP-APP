@@ -1,7 +1,8 @@
 from datetime import datetime
 from flask import Blueprint, request, jsonify, session
 from app.utils.excel_db import ExcelDB
-from app.security.auth import hash_password, check_password, requires_auth, requires_role
+from app.security.auth import (check_password, hash_password, issue_token,
+                               requires_auth, requires_role)
 from app.utils.logger import log_event
 
 auth_bp = Blueprint('auth', __name__)
@@ -31,6 +32,10 @@ def login():
 
     return jsonify({
         "message": "Login successful",
+        # Clients that cannot hold the session cookie send this back as
+        # `Authorization: Bearer <token>`. Before tokens were signed there was
+        # nothing to hand out here, because any string at all was accepted.
+        "token": issue_token(session['user_id'], session['username'], session['role']),
         "user": {
             "id": user.get('id'),
             "username": user.get('username'),

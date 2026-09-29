@@ -581,3 +581,111 @@ a read-through by a native speaker, particularly the tailoring vocabulary
 differ from the standard term. A note to that effect is in the file header.
 
 ---
+
+## Session — the three defects the audit left open
+
+Nothing here is visible in the desktop app; all three were latent, and two of
+them could have destroyed live data the first time the Flask side was started
+in the wrong way.
+
+**One configuration module instead of two.** `config.py` and `app/config.py`
+were byte-identical copies, and `from config import Config` resolved to
+whichever one the launcher happened to put on `sys.path` first. Because both
+derived `BASE_DIR` from `__file__`, the two copies disagreed about where the
+data was: started from the project root the same import statement meant
+`<root>/data`, started from `app/` (which is what `Start.bat` does, `cd app &&
+pythonw main_gui.py`) it meant `<root>/app/data`. Ten modules import it.
+- the root file is now the only real one; `app/config.py` loads it by absolute
+  path, under a private module name so it cannot collide with whichever
+  spelling of `config` is already in `sys.modules`, and re-exports `Config` —
+  both spellings now hand back the same class object,
+- the shim also reuses an already-loaded root module rather than executing the
+  file twice, so a process that touches both spellings gets one `Config` and
+  one read of the signing key,
+- `DESKTOP_DATA_DIR` is now a named constant, so code can *check against* the
+  desktop's store rather than guess at it,
+- `JTC_DATA_DIR` overrides the API's store; `app/tests/conftest.py` uses it to
+  keep the suite off both real directories, which it has to do from a conftest
+  because `DATA_DIR` is resolved once at import time.
+
+**`SECRET_KEY` is no longer a literal in the repo.** It defaulted to
+`'super-secret-atelier-key-change-in-production'`, which signs the Flask
+session cookie and now the auth tokens too — anyone holding a copy of the
+source could forge either. Absent `SECRET_KEY` in the environment, a random
+key is generated once and persisted (mode 0600) beside the data, so restarts
+do not invalidate every outstanding session.
+
+**`initialize_database()` no longer creates unreadable workbooks.** It saved a
+bare `openpyxl.Workbook()` — a workbook whose one sheet is completely empty.
+Everything in `excel_db.py` keys off the header row, so that is not an empty
+table, it is a broken one:
+- `get_all()` bails on `len(rows) < 2` and returns `[]` no matter what is
+  written afterwards,
+- `delete_record()` raises `ValueError` looking for the id column,
+- and the self-heal path in `save_record()` used `sheet.append()`, which on a
+  workbook *loaded from disk* lands on row 2 while row 1 stays blank — after
+  which every field mapped through row 1 resolved to `None` and each record
+  was stored as **a row of empty strings**. Silent, total loss of the first
+  writes into any table.
+
+The fix gives each table its header row (`TABLE_SCHEMAS`, mirroring the
+`to_dict()` order in `app/models/schemas.py`), writes it to row 1 explicitly,
+repairs an existing headerless workbook, and leaves any workbook that already
+has a header row alone — even one whose columns differ, because reshaping
+somebody's data is not initialisation's job.
+
+It also now **refuses to run against the desktop store**. Both sides define
+tables called `customers`, `orders`, `inventory` and `employees`, and the
+columns differ in every one of them — the desktop's customers sheet is
+`(id, name, phone, length, sleeve, shoulder…)` while the API's `CustomerModel`
+is `(id, name, phone, chest, waist, length, sleeves, created_at)`. Pointing the
+API at `app/data/` would have written the API's schema straight over live
+customer records. This is not hypothetical: `app/data/users.xlsx` is still
+headerless from the one time `initialize_database()` ran with `app/` on
+`sys.path`. (Left as-is — nothing in the desktop app reads it, and live-data
+files are not ours to delete.)
+
+**`verify_token()` is now an actual check.** It was:
+
+    return {"username": "admin", "role": "Administrator"} if token else None
+
+Any non-empty string — `"x"`, `"null"`, `"undefined"`, a guess — authenticated
+as an administrator, which defeated `@requires_auth` on all twenty protected
+routes. Tokens are now signed with `itsdangerous.URLSafeTimedSerializer`,
+salted so one cannot be swapped in for any other value signed with the same
+key, and expire after 12 hours. `issue_token()` is handed out by `/api/auth/
+login`, which previously returned nothing a client could use — because
+anything at all would have worked.
+
+While in there: `requires_auth` now stashes the verified identity on `flask.g`
+and `requires_role` reads it. Without that, a token-authenticated administrator
+fell through to `requires_role`'s session lookup, defaulted to `Viewer`, and
+got a 403 on every route that also checks a role.
+
+**Tests** — `app/tests/test_config_and_auth.py`, 23 of them, no server:
+both import spellings resolving to one object; `app/config.py` having no
+`Config` of its own; the two stores staying distinct; the signing key not
+being a shipped constant; headers landing in row 1; a headerless workbook
+being repaired; an existing header row surviving; initialisation refusing the
+desktop store; records keeping their values instead of blanks; and, for the
+token, rejection of arbitrary strings, non-strings, a tampered payload
+(base64-decoded, role rewritten, original signature kept), a token signed with
+another key, one signed under another salt, and an expired one — plus the
+decorators as a route meets them, including a `Viewer` token being refused a
+role-gated route.
+
+All five defects were mutation-tested: re-introducing each one fails exactly
+the tests that name it. (The first attempt at that proved nothing — the
+mutation script truncated each file before reading it back, since
+`io.open(p, "w")` truncates the moment it is evaluated. Rerun correctly.)
+
+**Verification:** unit tests **51/51** (was 28; 23 new); GUI smoke 146/146;
+desktop app launched and screenshotted to confirm the config change does not
+touch it — it reaches its data through `excel_manager.py`, which computes the
+path from its own `__file__` and never consults `Config`.
+
+**One behaviour change worth knowing:** the audit log is now one file at
+`<root>/data/system_audit.log` rather than following whichever config copy the
+launcher picked. It was already split across both directories.
+
+---
