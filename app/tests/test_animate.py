@@ -237,6 +237,45 @@ class EnabledFlagTestCase(unittest.TestCase):
         animate.set_enabled("yes")
         self.assertIs(animate.enabled(), True)
 
+    def test_the_flag_is_shared_across_both_import_spellings(self):
+        """This file is importable as `app.utils.animate` from the project
+        root and as `utils.animate` from app/ -- which is how Start.bat runs
+        the app. Python makes those two modules with two sets of globals, so
+        a module-level flag meant switching motion off through one spelling
+        left the other still animating.
+
+        Loaded here under a third name to prove the flag is genuinely
+        process-wide and not merely shared by luck of import order.
+        """
+        import importlib.util
+        import os
+
+        path = os.path.abspath(animate.__file__)
+        spec = importlib.util.spec_from_file_location("_animate_other_name", path)
+        other = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(other)
+
+        self.assertIsNot(other, animate, "not actually a second module object")
+
+        animate.set_enabled(False)
+        self.assertFalse(other.enabled(), "the second copy kept animating")
+        other.set_enabled(True)
+        self.assertTrue(animate.enabled(), "the flag did not come back the other way")
+
+    def test_a_second_copy_does_not_reset_the_flag_on_import(self):
+        """Importing the module again mid-run must not silently switch
+        motion back on underneath a caller that turned it off."""
+        import importlib.util
+        import os
+
+        animate.set_enabled(False)
+        spec = importlib.util.spec_from_file_location(
+            "_animate_reimport", os.path.abspath(animate.__file__))
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        self.assertFalse(animate.enabled(), "a re-import reset the flag")
+        self.assertFalse(module.enabled())
+
 
 if __name__ == "__main__":
     unittest.main()

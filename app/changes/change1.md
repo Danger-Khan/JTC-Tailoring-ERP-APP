@@ -785,3 +785,95 @@ the snapshot numbers, the two extra styles, no substituted glyphs and no
 column collision; dashboard screenshotted.
 
 ---
+
+## Session — barcode, machine health, Urdu on paper, motion
+
+- **`barcode_service.py` did not produce a barcode.** Three independent
+  reasons, each fatal alone: no modulo-103 check symbol (mandatory — every
+  conformant scanner rejects the label without it); a pattern table shifted
+  by the ASCII offset, so `'0'` carried the pattern for *space* and every
+  character would have read back as a different one; 39 of ~95 characters
+  covered, with the rest falling back to `111111`; and two entries that were
+  not 11 modules, so not symbols at all (its space was `211213`, 10 modules).
+- Replaced with the full 106-symbol table, the check symbol, a **decoder**,
+  and a real 10-module quiet zone (it left 10 *pixels*). The decoder is the
+  point: it is how you prove the encoder is right rather than plausible.
+- The table was **generated from `explore/barcode-rs`**, not retyped — typing
+  106 six-digit patterns twice is how you end up with two different tables —
+  and a test asserts the two stay identical. Cross-checked both ways: the
+  Python and Rust encoders emit byte-identical widths for every sample, and
+  each decodes the other's output.
+- Tests check the symbology's own invariants rather than trusting the
+  transcription: 11 modules per symbol, **bars totalling an even number of
+  modules** (catches a transposed digit pair, which a plain sum does not),
+  no duplicate rows, no element over 4 modules, and three published bit
+  patterns matched exactly.
+
+- **CPU and RAM showed a dash because psutil was never installed.** It is
+  declared in `requirements.txt`; the import is deliberately guarded so a
+  missing optional dependency greys out one card instead of stopping the
+  app — right for the shop, useless for noticing. There is now a test that
+  every declared dependency actually imports.
+- **CPU then read a steady 0%.** `cpu_percent(interval=None)` reports load
+  since the *previous* call, so the first is always 0.0 and the rest depend
+  on when the cache happened to expire. It samples a real window now, which
+  it can afford because the GUI already runs the probe off the Tk thread.
+  Confirmed it tracks: 4.6% idle, 14.2% under a busy loop.
+- The **GPU row showed a bare load percentage**, which reads as broken on an
+  idle counter machine; it shows VRAM beside it (`0% · 0.0/4G`). The probe
+  itself was always fine — it finds the Quadro M2000M.
+- The five readouts are now a **two-column grid**, roughly half the height of
+  five stacked rows, leaving the sidebar headroom at windowed sizes.
+- Worth recording: the strip *looked* clipped in a screenshot, and it was
+  not. The grab ignored this machine's 1.25 display scaling, so the image
+  was short by a quarter. Measured the widget geometry before changing
+  anything — the layout was fine all along.
+
+- **Urdu reaches the printed slip for the first time.** The terms were in
+  the code and never rendered: Helvetica has no Arabic script, and reportlab
+  does not fail on a missing glyph — it substitutes ZapfDingbats, whose
+  stand-in for a letter is a filled square. The slip printed
+  `Length (■■■■■)` and every text-level assertion passed.
+- `app/utils/urdu.py` does all three things that have to be right — a font
+  with the glyphs, `arabic-reshaper` for cursive joining, `python-bidi` for
+  right-to-left order. Any two of the three is worse than none: it prints
+  isolated letters backwards, which looks deliberate. Falls back to
+  romanised labels when any part is unavailable.
+- Font: Nastaliq if present, else Segoe UI / Arial / Tahoma (Naskh —
+  readable, not what an Urdu reader would choose). No Nastaliq face on this
+  machine. The shop's own terms are **restored exactly as they were
+  written** (لبادی for length, واشن for daman, بائی پا for paancha);
+  several are regional rather than standard Urdu, and that is the
+  shopkeeper's vocabulary, not ours to quietly correct. Nobody has ever
+  seen them on paper, so they are worth a native speaker's eye now.
+- Column positions measured, not eyeballed: the first attempt overlapped the
+  Urdu with "Shalwar Length:" and truncated it.
+
+- **Motion.** `app/utils/animate.py`: pages settle upward into place on a
+  section change, dialogs fade up. Tk has no per-widget opacity — a frame is
+  opaque, full stop — so only `Toplevel` can really fade and in-page content
+  moves instead. Bound on the Toplevel class, so every dialog gets it and
+  any future one comes along free.
+- Every runner writes its final value as its last act, so a cancelled or
+  destroyed animation cannot strand a card half-tinted or a page 18px low.
+  Switchable off in Settings for slower counter machines.
+- **The flag had to move out of module globals.** This file is reachable as
+  both `utils.animate` and `app.utils.animate` depending on how the app was
+  started (`Start.bat` does `cd app`), and Python makes those two modules
+  with two sets of globals — so switching motion off through one spelling
+  left the other animating. Exactly the trap the duplicate `config.py` fell
+  into. It surfaced as the smoke test's layout checks failing *intermittently*
+  against an animation nobody thought was running. The flag now lives on one
+  process-wide object, and a test loads the module under a third name to
+  prove it.
+- The smoke test runs with motion off, because it asserts layout and a
+  section entering is transiently offset by design; one block at the end
+  turns it on deliberately and checks every section settles flush.
+
+**Verification:** unit tests **143** (was 82); GUI smoke **162/162**, run
+three times over to confirm the flakiness was gone; both slip PDFs
+re-rendered and read back operator by operator (no ZapfDingbats, font
+embedded, no column collision); Urdu shaping rendered to an image and
+checked by eye; sidebar and Settings screenshotted with the health strip on.
+
+---

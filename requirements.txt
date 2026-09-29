@@ -22,3 +22,5 @@ bcrypt>=5.0.0          # password hashing for the API's auth routes
 itsdangerous>=2.2.0    # signs the API's bearer tokens (app/security/auth.py);
                        # arrives with Flask, pinned here because auth.py
                        # imports it directly rather than through Flask
+arabic-reshaper>=3.0.1 # Urdu on printed slips: picks the joined letter form
+python-bidi>=0.6.11    # ... and reorders it right-to-left (app/utils/urdu.py)

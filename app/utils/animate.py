@@ -27,22 +27,39 @@ Three rules, all learned the hard way on this codebase:
     the final state immediately. A shop counter PC is not always fast, and
     motion is the first thing to drop.
 """
+import sys
 import tkinter as tk
+import types
 
 # Roughly 60fps. Tk's after() resolution makes anything finer a lie.
 FRAME_MS = 16
 
-_enabled = True
+# The on/off flag lives on one process-wide object rather than in this
+# module's globals, because this file is reachable under TWO module names:
+# `app.utils.animate` when the app is started from the project root, and
+# `utils.animate` when it is started from app/ (which is what Start.bat
+# does -- `cd app && pythonw main_gui.py`). Python treats those as separate
+# modules with separate globals, so set_enabled() through one spelling left
+# the other still animating.
+#
+# That is exactly the trap the duplicate config.py fell into, and it showed
+# up the same way: the GUI smoke test turned motion off, did not get it,
+# and its layout assertions started failing intermittently depending on
+# whether the event loop had caught up with an animation nobody thought was
+# running.
+_STATE = sys.modules.setdefault("_jtq_animate_state",
+                                types.ModuleType("_jtq_animate_state"))
+if not hasattr(_STATE, "enabled"):
+    _STATE.enabled = True
 
 
 def set_enabled(on):
     """Turn all motion on or off. Off applies final states instantly."""
-    global _enabled
-    _enabled = bool(on)
+    _STATE.enabled = bool(on)
 
 
 def enabled():
-    return _enabled
+    return _STATE.enabled
 
 
 def ease_out_cubic(t):
@@ -74,7 +91,7 @@ def run(widget, duration_ms, step, done=None, ease=ease_out_cubic):
     if not _alive(widget):
         return
 
-    if not _enabled or duration_ms <= 0:
+    if not _STATE.enabled or duration_ms <= 0:
         _safe(step, 1.0)
         if done:
             done()
@@ -123,7 +140,7 @@ def fade_in_window(window, duration_ms=140, final_alpha=1.0):
     if not _alive(window):
         return
     try:
-        window.attributes("-alpha", 0.0 if _enabled else final_alpha)
+        window.attributes("-alpha", 0.0 if _STATE.enabled else final_alpha)
     except tk.TclError:
         return  # no alpha here; the window is simply shown
 
@@ -174,7 +191,7 @@ def tint_in(widget, from_color, to_color, duration_ms=200, delay_ms=0,
 
     setter = apply or (lambda color: widget.configure(bg=color))
 
-    if not _enabled:
+    if not _STATE.enabled:
         _safe(lambda _t: setter(to_color), 1.0)
         return
 

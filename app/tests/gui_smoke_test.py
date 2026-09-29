@@ -14,6 +14,7 @@ import os
 import shutil
 import tempfile
 import traceback
+import time
 
 from pathlib import Path
 
@@ -41,6 +42,16 @@ def hook(level, *args, **kwargs):
 gui.messagebox.showerror = lambda *a, **k: hook("error", *a)
 gui.messagebox.showwarning = lambda *a, **k: hook("warning", *a)
 gui.messagebox.showinfo = lambda *a, **k: hook("info", *a)
+
+# Motion off for the run. Everything below asserts layout -- is this card
+# mapped, does it have a real height, did the section switch -- and a
+# section entering is transiently offset by design, so leaving animation on
+# made those checks depend on whether the event loop had caught up. They
+# failed intermittently, which is worse than failing. The motion itself has
+# its own tests in test_animate.py; one check at the end covers the
+# integration with a real section change.
+from app.utils import animate
+animate.set_enabled(False)
 
 SKIP_PDF = False
 try:
@@ -721,6 +732,12 @@ def run_gui_smoke_test():
                     drawn.append(str(text))
                     return real_canvas.drawString(self, x, y, text, *a, **k)
 
+                # The Urdu terms are right-aligned against the value column,
+                # so they come through here and not drawString.
+                def drawRightString(self, x, y, text, *a, **k):
+                    drawn.append(str(text))
+                    return real_canvas.drawRightString(self, x, y, text, *a, **k)
+
             gui.canvas.Canvas = RecordingCanvas
             try:
                 pdf_path = os.path.join(tmpdir, "Receipt_%s.pdf" % selected_id)
@@ -753,27 +770,73 @@ def run_gui_smoke_test():
             check("the fallback says so on the slip",
                   any("customer profile" in s for s in drawn))
 
-            # Nothing on the slip may need a glyph Helvetica hasn't got.
-            # reportlab does not fail on one -- it silently swaps in
-            # ZapfDingbats, where the substitute for a letter is a filled
-            # square, so "Length (لبادی)" printed as "Length (■■■■■)" and
+            # Nothing on the slip may be drawn in a font that cannot render
+            # it. reportlab does not fail on a missing glyph -- it silently
+            # swaps in ZapfDingbats, whose stand-in for a letter is a filled
+            # square, so "Length (لبادی)" printed as "Length (■■■■■)" while
             # every text-level assertion above still passed.
-            from reportlab.pdfbase.pdfmetrics import getFont
-            encodable = set(getFont("Helvetica").encName and range(32, 127))
-            winansi_extra = set(range(160, 256))
-            bad = [s for s in drawn
-                   if any(ord(ch) > 255 or
-                          (ord(ch) not in encodable and ord(ch) not in winansi_extra)
-                          for ch in s)]
-            check("no slip text falls back to the dingbat font", not bad)
-            if bad:
-                print("      unrenderable: %r" % (bad[:3],))
+            #
+            # Checked against the FILE rather than the drawn strings: the
+            # Urdu terms are legitimately non-ASCII now, so "is this text
+            # ASCII" no longer distinguishes working from broken. The font
+            # dictionary does, and it is what a PDF reader goes by.
+            with open(pdf_path, "rb") as fh:
+                pdf_bytes = fh.read()
+            check("no glyph on the slip falls back to the dingbat font",
+                  b"ZapfDingbats" not in pdf_bytes)
+
+            from app.utils import urdu
+            if urdu.available():
+                check("the Urdu terms are drawn in an embedded font",
+                      b"/FontFile2" in pdf_bytes
+                      and urdu.font_name().split("-")[0].encode() in pdf_bytes)
+                check("Urdu text is shaped and reordered before drawing",
+                      any(urdu.has_arabic(s) for s in drawn))
+                # Shaping picks presentation forms (U+FB50..U+FEFF); raw
+                # Unicode letters reaching the canvas means it was skipped,
+                # which prints disconnected stumps in the wrong order.
+                shaped = [s for s in drawn if urdu.has_arabic(s)]
+                check("no unshaped Arabic letters reach the canvas",
+                      shaped and all(
+                          all(not (0x0600 <= ord(ch) <= 0x06FF) for ch in s)
+                          for s in shaped))
+            else:
+                print("SKIP  Urdu on the slip (no font or shaping libraries)")
 
             # The annotation must not run into the styles column beside it.
             from reportlab.pdfbase.pdfmetrics import stringWidth
             note = next((s for s in drawn if "customer profile" in s), "")
             check("the fallback note stops short of the styles column",
                   178 + stringWidth(note, "Helvetica-Oblique", 8) < 280)
+
+        # --- Motion: on for this block only ---------------------------------
+        # The one thing that matters outside test_animate.py is that a real
+        # section change settles. An animation that left the page 18px low
+        # forever would be invisible to every other check here.
+        animate.set_enabled(True)
+        try:
+            check("the motion toggle is wired to the setting",
+                  hasattr(app, "var_animations") and app.animations_enabled is True)
+            for target in ("customer", "finance", "dashboard"):
+                app.show_section(target)
+                for _ in range(40):
+                    app.update()
+                    time.sleep(0.008)
+                pady = app.sections[target].pack_info()["pady"]
+                top = pady[0] if isinstance(pady, (tuple, list)) else pady
+                check("section '%s' settles flush after animating" % target,
+                      int(top) == 0)
+            # And with motion off a section change must be instant, not
+            # merely fast -- that is what the setting is for.
+            animate.set_enabled(False)
+            app.show_section("customer")
+            pady = app.sections["customer"].pack_info()["pady"]
+            top = pady[0] if isinstance(pady, (tuple, list)) else pady
+            check("with motion off a section change is immediate", int(top) == 0)
+        finally:
+            animate.set_enabled(False)
+            app.show_section("dashboard")
+            app.update()
 
         # --- Donut chart percentages render ---
         app.update_graphics_and_stats()

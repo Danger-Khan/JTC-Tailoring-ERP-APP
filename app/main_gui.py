@@ -21,6 +21,7 @@ try:
     from utils import admin_password as pw_store
     from services import system_monitor as sysmon
     from utils import animate
+    from utils import urdu
     from services.notification_service import NotificationService
     from services.garment_engine import GarmentCalculator
 except ImportError:
@@ -34,6 +35,7 @@ except ImportError:
     from app.utils import admin_password as pw_store
     from app.services import system_monitor as sysmon
     from app.utils import animate
+    from app.utils import urdu
     from app.services.notification_service import NotificationService
     from app.services.garment_engine import GarmentCalculator
 
@@ -3359,30 +3361,55 @@ class JhagraERPApp(tk.Tk):
             c.setFont("Helvetica", 11)
 
             meas_y = height - 190
-            # Labels come from the order card's own list, so this slip and
-            # the one the order card prints say the same words.
-            #
-            # They used to carry the Urdu term in brackets -- "Length (لبادی)"
-            # -- which never reached the paper: the built-in Helvetica has no
-            # Urdu glyphs, so reportlab fell back to ZapfDingbats and printed
-            # "Length (■■■■■)". Putting real Urdu here needs an embedded
-            # Nastaliq font plus arabic-reshaper/python-bidi for joining and
-            # right-to-left order; neither is installed, and half of it would
-            # print isolated letters backwards. Romanised until then.
+            # English labels from the order card's own list, so this slip and
+            # the one the order card prints say the same words, plus the
+            # shop's Urdu term beside each -- but only when it will actually
+            # reach the paper. Helvetica has no Arabic script and reportlab
+            # does not fail on that; it substitutes ZapfDingbats, whose
+            # stand-in for a letter is a filled square, so this printed
+            # "Length (■■■■■)" for months. See app/utils/urdu.py: it needs a
+            # font with the glyphs AND joining AND right-to-left ordering,
+            # and any two of the three look worse than none.
             labels = dict(card_svc.MEASUREMENT_FIELDS)
-            m_list = [
-                (labels["lambai"], "lambai"), (labels["sleeve"], "sleeve"),
-                (labels["shoulder"], "shoulder"), (labels["collar"], "collar"),
-                (labels["chest"], "chest"), (labels["waist"], "waist"),
-                (labels["daman"], "daman"),
-                (labels["shalwar_length"], "shalwar_length"),
-                (labels["paancha"], "paancha"),
-            ]
+            # The shop's own terms, restored exactly as they were written
+            # here before -- several are regional rather than standard Urdu
+            # (لبادی for length, واشن for daman, بائی پا for paancha), and
+            # that is the shopkeeper's vocabulary to keep or change, not
+            # ours to quietly correct. They never rendered, so nobody has
+            # ever actually seen them on paper: worth a native speaker's eye
+            # now that they will.
+            urdu_terms = {
+                "lambai": "لبادی", "sleeve": "چستین", "shoulder": "تیرہ",
+                "collar": "کالر", "chest": "چھاتاں", "waist": "کمر",
+                "daman": "واشن", "shalwar_length": "شلوار لیبا",
+                "paancha": "بائی پا",
+            }
+            urdu_font = urdu.font_name() if urdu.available() else ""
+            m_list = [(labels[k], k) for k in
+                      ("lambai", "sleeve", "shoulder", "collar", "chest",
+                       "waist", "daman", "shalwar_length", "paancha")]
+
+            # Column positions, measured rather than eyeballed. The widest
+            # English label ("Lambai (Length):") runs to x=128 from x=45,
+            # and the widest Urdu term ("شلوار لیبا") is 42.5pt, so
+            # right-aligning the Urdu at 180 leaves both clear. The rule
+            # stops at 255, well short of the styles column at 270.
+            label_x, urdu_right, value_x = (45, 180, 188) if urdu_font else (50, 0, 150)
+            rule = (184, 255) if urdu_font else (145, 250)
 
             for name, key in m_list:
-                c.drawString(50, meas_y, f"{name}:")
-                c.drawString(150, meas_y, str(clean_val(meas.get(key))))
-                c.line(145, meas_y - 2, 250, meas_y - 2)
+                c.setFont("Helvetica", 11)
+                c.drawString(label_x, meas_y, f"{name}:")
+                if urdu_font:
+                    # Its own drawing run, never concatenated with the
+                    # English: one string holding both scripts would put the
+                    # bidi algorithm and reportlab's left-to-right placement
+                    # in an argument neither can win.
+                    c.setFont(urdu_font, 11)
+                    c.drawRightString(urdu_right, meas_y, urdu.shape(urdu_terms[key]))
+                    c.setFont("Helvetica", 11)
+                c.drawString(value_x, meas_y, str(clean_val(meas.get(key))))
+                c.line(rule[0], meas_y - 2, rule[1], meas_y - 2)
                 meas_y -= 20
 
             # Style selections (center/left visual elements of the physical slip)
