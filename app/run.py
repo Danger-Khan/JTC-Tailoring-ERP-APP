@@ -17,6 +17,7 @@ try:
     from app import create_app
     from app.security.middleware import rate_limit_auth_middleware
     from app.services.scheduler import BackgroundScheduler
+    from app.services import shop_identity as shop
 except ModuleNotFoundError as e:
     print("\n" + "=" * 65)
     print(f"❌ MODULE ERROR: {str(e)}")
@@ -37,14 +38,14 @@ scheduler = BackgroundScheduler(interval_seconds=3600)
 if __name__ == '__main__':
     scheduler.start()
     print("\n" + "=" * 65)
-    print("🚀 Atelier Enterprise Server listening at http://127.0.0.1:5000")
+    print(f"🚀 {shop.NAME} server listening at http://127.0.0.1:5000")
     print("   Press CTRL+C in the terminal to stop the server.")
     print("=" * 65 + "\n")
     
     try:
         app.run(host='127.0.0.1', port=5000, debug=False, threaded=True)
     except KeyboardInterrupt:
-        print("\nStopping Atelier Server...")
+        print(f"\nStopping {shop.NAME} server...")
     finally:
         scheduler.stop()
         print("✅ Background scheduler stopped safely.")

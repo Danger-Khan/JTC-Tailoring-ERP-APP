@@ -5,6 +5,8 @@ the Flask API share one code path.
 """
 from datetime import datetime
 
+from . import shop_identity as shop
+
 # ---------------------------------------------------------------------------
 # Constants (single source of truth for both GUI and API)
 # ---------------------------------------------------------------------------
@@ -61,6 +63,20 @@ ORD_HEADERS = [
 
 MEAS_HEADERS = ["order_id"] + [key for key, _ in MEASUREMENT_FIELDS]
 STYLE_HEADERS = ["order_id"] + list(STYLE_GROUPS.keys())
+
+# customers.xlsx predates the order card and carries nine of the measurements
+# on its own column names. order-card key -> customers.xlsx column.
+LEGACY_CUSTOMER_MEASUREMENTS = {
+    "lambai": "length",
+    "sleeve": "sleeve",
+    "shoulder": "shoulder",
+    "collar": "collar",
+    "chest": "chest",
+    "waist": "waist",
+    "daman": "daman",
+    "shalwar_length": "shalwar_len",
+    "paancha": "paancha",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -154,17 +170,8 @@ def customer_row(form, customer_id):
     """Builds a customers.xlsx row dict from the form."""
     meas = gather_measurements(form)
     # Map order-card measurement keys onto the legacy customer card columns.
-    legacy = {
-        "length": meas["lambai"],
-        "sleeve": meas["sleeve"],
-        "shoulder": meas["shoulder"],
-        "collar": meas["collar"],
-        "chest": meas["chest"],
-        "waist": meas["waist"],
-        "daman": meas["daman"],
-        "shalwar_len": meas["shalwar_length"],
-        "paancha": meas["paancha"],
-    }
+    legacy = {cust_col: meas[ord_key]
+              for ord_key, cust_col in LEGACY_CUSTOMER_MEASUREMENTS.items()}
     return {
         "id": customer_id,
         "name": str(form.get("name") or "").strip(),
@@ -314,6 +321,78 @@ def save_order_for_customer(excel_mgr, customers, orders, form, customer_id, ord
 
 
 # ---------------------------------------------------------------------------
+# Reading a saved order back
+# ---------------------------------------------------------------------------
+#
+# Every save snapshots the measurements and styles the order was taken with,
+# keyed by order_id. Until these existed nothing read those sheets back, so
+# reprinting an order fell back to the customer's row in customers.xlsx --
+# which holds only whatever measurements were entered LAST. Reprint a job
+# from three months ago for a customer who has since been re-measured and the
+# slip comes out with today's numbers on it, and the cloth gets cut to them.
+
+
+def _snapshot_for(excel_mgr, filename, headers, keys, order_id):
+    """The row in `filename` whose order_id matches, as a {key: str} dict."""
+    order_id = str(order_id or "").strip()
+    if not order_id:
+        return None
+    for row in excel_mgr.read_records(filename, headers):
+        if str(row.get("order_id") or "").strip() == order_id:
+            return {key: str(row.get(key) or "") for key in keys}
+    return None
+
+
+def load_measurements(excel_mgr, order_id):
+    """The measurements `order_id` was saved with, or None if it has none.
+
+    None means an order written before the order card existed, or one entered
+    straight into the ledger -- not an order measured at zero.
+    """
+    return _snapshot_for(excel_mgr, "measurements.xlsx", MEAS_HEADERS,
+                         [key for key, _ in MEASUREMENT_FIELDS], order_id)
+
+
+def load_styles(excel_mgr, order_id):
+    """The style choices `order_id` was saved with, or None.
+
+    Worth reading even though orders.xlsx repeats six of them: sleeve_type
+    and shalwar_type (Full/Half, Churidar/Patiala) have no order column and
+    live only here.
+    """
+    return _snapshot_for(excel_mgr, "styles.xlsx", STYLE_HEADERS,
+                         list(STYLE_GROUPS.keys()), order_id)
+
+
+def customer_measurements(customer):
+    """The nine measurements customers.xlsx keeps, on order-card keys."""
+    customer = customer or {}
+    return {ord_key: str(customer.get(cust_col) or "")
+            for ord_key, cust_col in LEGACY_CUSTOMER_MEASUREMENTS.items()}
+
+
+def measurements_for_order(excel_mgr, order_id, customer=None):
+    """Measurements to print for a saved order, as (values, from_snapshot).
+
+    from_snapshot is False when we had to fall back to the customer profile;
+    say so on the slip rather than letting a tailor assume otherwise.
+    """
+    snapshot = load_measurements(excel_mgr, order_id)
+    if snapshot and any(clean_num(v) for v in snapshot.values()):
+        return snapshot, True
+    return customer_measurements(customer), False
+
+
+def styles_for_order(excel_mgr, order_id, order=None):
+    """Style choices to print, preferring the snapshot over the order row."""
+    snapshot = load_styles(excel_mgr, order_id)
+    if snapshot and any(v.strip() for v in snapshot.values()):
+        return snapshot
+    order = order or {}
+    return {key: str(order.get(key) or "") for key in STYLE_GROUPS}
+
+
+# ---------------------------------------------------------------------------
 # Receipt
 # ---------------------------------------------------------------------------
 
@@ -328,8 +407,7 @@ def build_receipt_text(form, customer_id, order_id):
     divider = "=" * 40
     thin = "-" * 40
     lines = [
-        "JHAGRA CREATION & FABRICS".center(40),
-        "The Name Of Quality - JTQ".center(40),
+        *[line.center(40) for line in shop.header_lines()],
         divider,
         f"Order No : {order_id}",
         f"Customer : {str(form.get('name') or '').strip()}",
@@ -343,11 +421,17 @@ def build_receipt_text(form, customer_id, order_id):
         f"Advance   : PKR {advance:.2f}",
         f"Remaining : PKR {remaining:.2f}",
         divider,
-        f"Collar : {styles['collar_style']}   Cuff : {styles['cuff_style']}",
-        f"Pocket : {styles['pocket_style']}   Button : {styles['button_style']}",
-        f"Daman : {styles['daman_style']}   Stitch : {styles['stitching']}",
+        # One style per line. Two to a line overflowed the 40-column width
+        # the dividers are drawn at -- "Daman : Round Daman   Stitch : 1.
+        # Single Stitch" is 47 characters, and an 80mm roll wraps the tail
+        # onto its own line mid-value. One per line also makes room for the
+        # sleeve and shalwar styles, which were collected and then left off.
+        *[("%-14s: %s" % (label, styles.get(key) or "-"))[:40]
+          for key, (label, _) in STYLE_GROUPS.items()],
         divider,
-        "Thank you! Please bring receipt for pickup.".center(40),
+        # 40 characters is the width the dividers are drawn at; center()
+        # does not truncate, so anything longer just runs off the roll.
+        "Thank you! Bring receipt for pickup.".center(40),
     ]
     return "\n".join(lines)
 
@@ -367,9 +451,9 @@ def write_receipt_pdf(file_path, form, customer_id, order_id):
     width, height = A5
 
     c.setFont("Helvetica-Bold", 16)
-    c.drawString(40, height - 50, "JHAGRA CREATION & FABRICS")
+    c.drawString(40, height - 50, shop.NAME_UPPER)
     c.setFont("Helvetica", 10)
-    c.drawString(40, height - 65, "The Name Of Quality - JTQ")
+    c.drawString(40, height - 65, shop.TAGLINE)
     c.line(40, height - 75, width - 40, height - 75)
 
     c.setFont("Helvetica-Bold", 11)

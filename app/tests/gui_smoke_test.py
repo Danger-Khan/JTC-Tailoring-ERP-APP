@@ -1,6 +1,6 @@
-"""Permanent GUI smoke test for the Atelier ERP Tkinter app.
+"""Permanent GUI smoke test for the Jhagra ERP Tkinter app.
 
-Launches the real AtelierERPApp pointed at a throwaway temp data dir,
+Launches the real JhagraERPApp pointed at a throwaway temp data dir,
 then verifies: login -> dashboard, section navigation, theme/language
 switches, modal dialogs, Excel persistence, PDF generation and charts.
 
@@ -53,7 +53,7 @@ pdf_path = None
 
 def run_gui_smoke_test():
     try:
-        app = gui.AtelierERPApp()
+        app = gui.JhagraERPApp()
         app.update()
         check("login dialog shows", hasattr(app, "login_dlg") and app.login_dlg.winfo_exists())
 
@@ -684,11 +684,96 @@ def run_gui_smoke_test():
         else:
             app.show_section("dashboard")
             app.update()
-            app.tree_orders.selection_set(app.tree_orders.get_children()[0])
-            pdf_path = os.path.join(tmpdir, "Receipt_ORD-101.pdf")
-            gui.filedialog.asksaveasfilename = lambda **k: pdf_path
-            app.generate_order_pdf()
+            # ORD-102, not the first row: ORD-101 is seeded with the legacy
+            # shape that puts a name where customer_id belongs, so it resolves
+            # to no customer and the profile-fallback half of this would have
+            # nothing to fall back to.
+            selected_id = "ORD-102"
+            row = next(r for r in app.tree_orders.get_children()
+                       if str(app.tree_orders.item(r)["values"][0]) == selected_id)
+            app.tree_orders.selection_set(row)
+
+            # The slip must carry the measurements the ORDER was taken with,
+            # not the customer's current ones. C-101's profile above says
+            # length 42 / chest 38; snapshot this order at 33 / 29 so the two
+            # can't be confused, and give it the two style choices that live
+            # only in styles.xlsx.
+            from app.services import order_card_service as svc
+            snapshot = {key: "0" for key, _ in svc.MEASUREMENT_FIELDS}
+            snapshot.update(lambai="33", chest="29", order_id=selected_id)
+            temp_mgr.write_all_records(
+                "measurements.xlsx", svc.MEAS_HEADERS,
+                [[snapshot.get(h, "") for h in svc.MEAS_HEADERS]])
+            style_snap = {key: "" for key in svc.STYLE_GROUPS}
+            style_snap.update(order_id=selected_id, sleeve_type="Half",
+                              shalwar_type="Patiala", collar_style="Sherwani")
+            temp_mgr.write_all_records(
+                "styles.xlsx", svc.STYLE_HEADERS,
+                [[style_snap.get(h, "") for h in svc.STYLE_HEADERS]])
+
+            # Record what actually lands on the page rather than parsing the
+            # PDF back out: this is the text the tailor reads.
+            drawn = []
+            real_canvas = gui.canvas.Canvas
+
+            class RecordingCanvas(real_canvas):
+                def drawString(self, x, y, text, *a, **k):
+                    drawn.append(str(text))
+                    return real_canvas.drawString(self, x, y, text, *a, **k)
+
+            gui.canvas.Canvas = RecordingCanvas
+            try:
+                pdf_path = os.path.join(tmpdir, "Receipt_%s.pdf" % selected_id)
+                gui.filedialog.asksaveasfilename = lambda **k: pdf_path
+                app.generate_order_pdf()
+            finally:
+                gui.canvas.Canvas = real_canvas
+
             check("pdf generated", pdf_path and os.path.exists(pdf_path) and os.path.getsize(pdf_path) > 0)
+            check("pdf prints the order's own measurement snapshot",
+                  "33" in drawn and "29" in drawn)
+            check("pdf does not print the customer's current measurements",
+                  "42" not in drawn and "38" not in drawn)
+            check("pdf prints styles that exist only in styles.xlsx",
+                  "Half" in drawn and "Patiala" in drawn)
+            check("pdf is not labelled as a profile fallback when snapshotted",
+                  not any("customer profile" in s for s in drawn))
+
+            # An order with no snapshot still prints -- from the profile, and
+            # labelled as such so nobody mistakes it for the order's own.
+            temp_mgr.write_all_records("measurements.xlsx", svc.MEAS_HEADERS, [])
+            drawn.clear()
+            gui.canvas.Canvas = RecordingCanvas
+            try:
+                app.generate_order_pdf()
+            finally:
+                gui.canvas.Canvas = real_canvas
+            check("an unsnapshotted order falls back to the customer profile",
+                  "42" in drawn and "38" in drawn)
+            check("the fallback says so on the slip",
+                  any("customer profile" in s for s in drawn))
+
+            # Nothing on the slip may need a glyph Helvetica hasn't got.
+            # reportlab does not fail on one -- it silently swaps in
+            # ZapfDingbats, where the substitute for a letter is a filled
+            # square, so "Length (لبادی)" printed as "Length (■■■■■)" and
+            # every text-level assertion above still passed.
+            from reportlab.pdfbase.pdfmetrics import getFont
+            encodable = set(getFont("Helvetica").encName and range(32, 127))
+            winansi_extra = set(range(160, 256))
+            bad = [s for s in drawn
+                   if any(ord(ch) > 255 or
+                          (ord(ch) not in encodable and ord(ch) not in winansi_extra)
+                          for ch in s)]
+            check("no slip text falls back to the dingbat font", not bad)
+            if bad:
+                print("      unrenderable: %r" % (bad[:3],))
+
+            # The annotation must not run into the styles column beside it.
+            from reportlab.pdfbase.pdfmetrics import stringWidth
+            note = next((s for s in drawn if "customer profile" in s), "")
+            check("the fallback note stops short of the styles column",
+                  178 + stringWidth(note, "Helvetica-Oblique", 8) < 280)
 
         # --- Donut chart percentages render ---
         app.update_graphics_and_stats()

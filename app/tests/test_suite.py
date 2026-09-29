@@ -7,7 +7,7 @@ from app.utils.excel_db import ExcelDB
 from app.models.schemas import OrderModel
 from app.services.query_engine import process_query
 
-class AtelierBackendTestCase(unittest.TestCase):
+class JhagraBackendTestCase(unittest.TestCase):
 
     def setUp(self):
         """Sets up test application instance and test fixtures."""

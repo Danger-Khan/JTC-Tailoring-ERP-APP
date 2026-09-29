@@ -107,7 +107,7 @@ TAILOR_BG, TAILOR_FG = "#C9E4D5", "#3A6B52"
 # 'DM Sans' is the web app's --font-body. It is not installed by default on
 # Windows, so FONT_FAMILY only resolves to it when it is actually present
 # and otherwise stays on the platform UI face. The swap happens once in
-# AtelierERPApp.__init__ -- the first point at which a Tk root exists to
+# JhagraERPApp.__init__ -- the first point at which a Tk root exists to
 # query the installed font list against.
 DESIGN_FONT = "DM Sans"
 FONT_FAMILY = "SF Pro Text" if sys.platform == "darwin" else "Segoe UI"
@@ -233,11 +233,11 @@ class StatusPill(tk.Canvas):
                              font=font)
 
 
-class AtelierERPApp(tk.Tk):
+class JhagraERPApp(tk.Tk):
     def __init__(self):
         super().__init__()
         self._resolve_design_font()
-        self.title("Jhagra Textile & Clothing — Atelier Ledger")
+        self.title(card_svc.shop.APP_TITLE)
         self.minsize(1100, 700)
 
         # Brand images (logo / icon / owner photo). Safe to construct even
@@ -3252,7 +3252,7 @@ class AtelierERPApp(tk.Tk):
         if not path:
             return
         pdf = canvas.Canvas(path, pagesize=A5); width, height = A5
-        pdf.setFont("Helvetica-Bold", 18); pdf.drawString(40, height - 55, "JTQ EMPLOYEE TASK SLIP")
+        pdf.setFont("Helvetica-Bold", 18); pdf.drawString(40, height - 55, f"{card_svc.shop.SHORT} EMPLOYEE TASK SLIP")
         pdf.setFont("Helvetica", 12)
         for index, (label, key) in enumerate((("Employee", "name"), ("Role", "role"), ("Status", "status"), ("Task", "current_task"))):
             pdf.drawString(40, height - 105 - index * 30, f"{label}: {clean_val(employee.get(key))}")
@@ -3296,9 +3296,9 @@ class AtelierERPApp(tk.Tk):
 
             # Header
             c.setFont("Helvetica-Bold", 18)
-            c.drawString(40, height - 50, "JHAGRA CREATION & FABRICS")
+            c.drawString(40, height - 50, card_svc.shop.NAME_UPPER)
             c.setFont("Helvetica", 10)
-            c.drawString(40, height - 65, "The Name Of Quality - JTQ")
+            c.drawString(40, height - 65, card_svc.shop.TAGLINE)
 
             c.line(40, height - 75, width - 40, height - 75)
 
@@ -3309,23 +3309,50 @@ class AtelierERPApp(tk.Tk):
             c.drawString(40, height - 120, f"Contact: {clean_val(cust_data.get('phone', 'N/A'))}")
             c.drawString(40, height - 140, f"Date: {datetime.now().strftime('%Y-%m-%d')}")
 
-            # 9 Measurements (right column of the physical slip)
+            # 9 Measurements (right column of the physical slip), taken from
+            # the snapshot saved with this order rather than from the customer
+            # row: customers get re-measured, and customers.xlsx keeps only
+            # the latest set, so reading it reprints an old job with today's
+            # numbers -- and the cloth gets cut to them.
+            meas, from_snapshot = card_svc.measurements_for_order(
+                self.excel_mgr, ord_id, cust_data)
+
             c.setFont("Helvetica-Bold", 12)
             c.drawString(40, height - 170, "Measurements (Inches)")
+            if not from_snapshot:
+                # Orders predating the order card have nothing to snapshot.
+                # Say where the numbers came from instead of implying they
+                # are what the order was taken with.
+                # x=178 clears "Measurements (Inches)" (ends at 173.4) and
+                # stops at 258.5, well short of the styles column at 280.
+                c.setFont("Helvetica-Oblique", 8)
+                c.drawString(178, height - 170, "(from customer profile)")
             c.setFont("Helvetica", 11)
 
             meas_y = height - 190
+            # Labels come from the order card's own list, so this slip and
+            # the one the order card prints say the same words.
+            #
+            # They used to carry the Urdu term in brackets -- "Length (لبادی)"
+            # -- which never reached the paper: the built-in Helvetica has no
+            # Urdu glyphs, so reportlab fell back to ZapfDingbats and printed
+            # "Length (■■■■■)". Putting real Urdu here needs an embedded
+            # Nastaliq font plus arabic-reshaper/python-bidi for joining and
+            # right-to-left order; neither is installed, and half of it would
+            # print isolated letters backwards. Romanised until then.
+            labels = dict(card_svc.MEASUREMENT_FIELDS)
             m_list = [
-                ("Length (لبادی)", cust_data.get("length")), ("Sleeve (چستین)", cust_data.get("sleeve")),
-                ("Shoulder (تیرہ)", cust_data.get("shoulder")), ("Collar (کالر)", cust_data.get("collar")),
-                ("Chest (چھاتاں)", cust_data.get("chest")), ("Waist (کمر)", cust_data.get("waist")),
-                ("Daman (واشن)", cust_data.get("daman")), ("Shalwar Length (شلوار لیبا)", cust_data.get("shalwar_len")),
-                ("Paancha (بائی پا)", cust_data.get("paancha"))
+                (labels["lambai"], "lambai"), (labels["sleeve"], "sleeve"),
+                (labels["shoulder"], "shoulder"), (labels["collar"], "collar"),
+                (labels["chest"], "chest"), (labels["waist"], "waist"),
+                (labels["daman"], "daman"),
+                (labels["shalwar_length"], "shalwar_length"),
+                (labels["paancha"], "paancha"),
             ]
 
-            for name, val in m_list:
+            for name, key in m_list:
                 c.drawString(50, meas_y, f"{name}:")
-                c.drawString(150, meas_y, str(clean_val(val)))
+                c.drawString(150, meas_y, str(clean_val(meas.get(key))))
                 c.line(145, meas_y - 2, 250, meas_y - 2)
                 meas_y -= 20
 
@@ -3334,14 +3361,19 @@ class AtelierERPApp(tk.Tk):
             c.drawString(280, height - 170, "Selected Styles")
             c.setFont("Helvetica", 11)
 
+            styles = card_svc.styles_for_order(self.excel_mgr, ord_id, order_data)
             style_y = height - 190
             s_list = [
-                ("Button", order_data.get("button_style")),
-                ("Collar", order_data.get("collar_style")),
-                ("Cuffs", order_data.get("cuff_style")),
-                ("Pocket", order_data.get("pocket_style")),
-                ("Daman", order_data.get("daman_style")),
-                ("Stitch", order_data.get("stitching"))
+                ("Button", styles.get("button_style")),
+                ("Collar", styles.get("collar_style")),
+                ("Cuffs", styles.get("cuff_style")),
+                ("Pocket", styles.get("pocket_style")),
+                ("Daman", styles.get("daman_style")),
+                ("Stitch", styles.get("stitching")),
+                # orders.xlsx has no column for these two, so until the style
+                # snapshot was read back they never reached the tailor at all.
+                ("Sleeve", styles.get("sleeve_type")),
+                ("Shalwar", styles.get("shalwar_type")),
             ]
 
             for name, val in s_list:
@@ -4285,5 +4317,5 @@ class AtelierERPApp(tk.Tk):
 
 
 if __name__ == "__main__":
-    app = AtelierERPApp()
+    app = JhagraERPApp()
     app.mainloop()

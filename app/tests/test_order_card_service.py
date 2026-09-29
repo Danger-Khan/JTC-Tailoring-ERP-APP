@@ -93,10 +93,25 @@ class OrderCardServiceTestCase(unittest.TestCase):
         self.assertEqual(row["remaining"], "1500.00")
 
     def test_build_receipt_text_includes_style_lines(self):
+        """One style per line, labelled as STYLE_GROUPS labels them. Two to
+        a line ran past the 40-column width the dividers are drawn at, and
+        left sleeve and shalwar style off the receipt entirely."""
         receipt = svc.build_receipt_text(self.form, "C-110", "ORD-110")
-        self.assertIn("Button : Baz Button", receipt)
-        self.assertIn("Daman : Round Daman", receipt)
-        self.assertIn("Stitch : 1. Single Stitch", receipt)
+        self.assertIn("Button Style  : Baz Button", receipt)
+        self.assertIn("Daman Type    : Round Daman", receipt)
+        self.assertIn("Stitching     : 1. Single Stitch", receipt)
+        self.assertIn("Sleeve Style  : Full", receipt)
+        self.assertIn("Shalwar Style : Normal", receipt)
+
+    def test_build_receipt_text_prints_every_style_group(self):
+        receipt = svc.build_receipt_text(self.form, "C-110", "ORD-110")
+        for _, (label, _options) in svc.STYLE_GROUPS.items():
+            self.assertIn(label, receipt)
+
+    def test_an_unset_style_prints_a_dash_rather_than_a_ragged_blank(self):
+        receipt = svc.build_receipt_text(
+            {**self.form, "collar_style": ""}, "C-110", "ORD-110")
+        self.assertIn("Collar Type   : -", receipt)
 
     def test_save_order_writes_all_excel_sheets(self):
         fake_mgr = FakeExcelMgr()

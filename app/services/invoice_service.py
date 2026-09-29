@@ -1,12 +1,17 @@
 import html
 from datetime import datetime
 from app.models.schemas import OrderModel
+from app.services import shop_identity as shop
 
 class InvoiceEngine:
-    
-    SHOP_NAME = "ATELIER TAILORING & DESIGN STUDIO"
-    SHOP_ADDRESS = "Main Boulevard, Suite #4, Commercial Area"
-    SHOP_PHONE = "+92 300 1234567"
+
+    # One source for these -- see app/services/shop_identity.py. They used to
+    # be the starter template's placeholders (a studio name that is not this
+    # shop, and a phone number nobody answers) on a document handed to a
+    # customer.
+    SHOP_NAME = shop.NAME_UPPER
+    SHOP_ADDRESS = shop.ADDRESS
+    SHOP_PHONE = shop.PHONE
 
     @classmethod
     def generate_thermal_text_receipt(cls, order: dict) -> str:
@@ -24,10 +29,12 @@ class InvoiceEngine:
         divider = "=" * 32
         sub_divider = "-" * 32
 
+        # Skip any masthead line the shop hasn't supplied rather than
+        # printing a blank one (or a placeholder).
+        masthead = "\n".join(line.center(32) for line in shop.header_lines())
+
         receipt = f"""
-{cls.SHOP_NAME.center(32)}
-{cls.SHOP_ADDRESS.center(32)}
-{cls.SHOP_PHONE.center(32)}
+{masthead}
 {divider}
 Invoice #: {inv_no:<21}
 Date     : {date_str:<21}
@@ -79,7 +86,7 @@ BALANCE DUE : PKR {balance:>11.2f}
     <div class="invoice-card">
         <div class="header">
             <h2>{cls.SHOP_NAME}</h2>
-            <p>{cls.SHOP_ADDRESS} | {cls.SHOP_PHONE}</p>
+            <p>{" | ".join(shop.header_lines()[1:])}</p>
         </div>
         <div class="details">
             <div>

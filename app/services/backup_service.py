@@ -4,6 +4,7 @@ import zipfile
 from datetime import datetime
 from config import Config
 from app.utils.logger import log_event
+from app.services import shop_identity as shop
 
 class BackupEngine:
 
@@ -11,7 +12,7 @@ class BackupEngine:
     def create_full_backup() -> str:
         """Compresses the entire ./data directory into a timestamped zip backup."""
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        backup_filename = f"backup_atelier_{timestamp}.zip"
+        backup_filename = f"backup_{shop.SLUG}_{timestamp}.zip"
         backup_path = os.path.join(Config.BACKUP_DIR, backup_filename)
 
         with zipfile.ZipFile(backup_path, 'w', zipfile.ZIP_DEFLATED) as zipf:

@@ -4,9 +4,10 @@ from app.utils.excel_db import ExcelDB, initialize_database
 from app.security.auth import hash_password
 from app.utils.migrator import migrate_excel_to_sqlite
 from app.services.backup_service import BackupEngine
+from app.services import shop_identity as shop
 
 def main():
-    parser = argparse.ArgumentParser(description="Atelier Management System CLI Utility")
+    parser = argparse.ArgumentParser(description=f"{shop.NAME} management CLI")
     subparsers = parser.add_subparsers(dest="command", help="Available Commands")
 
     # Command: init

@@ -3,7 +3,7 @@ import sqlite3
 from config import Config
 from app.utils.excel_db import ExcelDB
 
-def migrate_excel_to_sqlite(sqlite_db_name: str = "atelier_database.db"):
+def migrate_excel_to_sqlite(sqlite_db_name: str = "jtq_database.db"):
     """Reads all Excel sheets and creates a relational SQLite database file."""
     sqlite_path = os.path.join(Config.DATA_DIR, sqlite_db_name)
     conn = sqlite3.connect(sqlite_path)

@@ -689,3 +689,99 @@ path from its own `__file__` and never consults `Config`.
 launcher picked. It was already split across both directories.
 
 ---
+
+## Session — the order slip printed the wrong measurements
+
+Everything here is about the piece of paper the tailor cuts from, plus the
+name printed at the top of it.
+
+**The slip reprinted an old order with today's measurements.** Every order
+save snapshots its measurements and styles into `measurements.xlsx` and
+`styles.xlsx`, keyed by `order_id` — that is what the order card's own
+comment says it is for. Nothing ever read those sheets back. The ledger's
+"Print Order PDF" pulled the numbers out of `customers.xlsx` instead, which
+keeps only whatever was entered last.
+
+So: measure a customer, take an order, re-measure them later (the Customer
+Hub is the single place measurements are edited), then reprint the first
+order. It came out with the new numbers on it, and the cloth gets cut to
+them. Silent — the slip looks perfectly normal.
+
+- `load_measurements()` / `load_styles()` read a snapshot back by order id,
+- `measurements_for_order()` prefers the snapshot and returns whether it got
+  one, so the slip can say where the numbers came from,
+- `styles_for_order()` does the same for the style choices,
+- an order with no snapshot (anything predating the order card) still prints,
+  from the profile, labelled "(from customer profile)" rather than passed off
+  as the order's own,
+- a snapshot of all zeros counts as no snapshot: that is an order nobody
+  measured, not a customer measured at zero,
+- a row whose `order_id` went missing no longer answers to every lookup made
+  with a blank id.
+
+**Two style choices were collected and then thrown away.** `sleeve_type` and
+`shalwar_type` — Full/Half, Churidar/Patiala — have no column in
+`orders.xlsx`, so they were written to `styles.xlsx` and read by nothing.
+The tailor never saw them. Both now print, on the PDF and on the text
+receipt.
+
+**The Urdu measurement labels were printing as black squares.** `Length
+(لبادی)` and the eight beside it: the built-in Helvetica has no Urdu glyphs,
+and reportlab does not fail on that — it silently substitutes ZapfDingbats,
+whose stand-in for a letter is a filled square. The slip has been printing
+`Length (■■■■■)`. Every text-level assertion passed the whole time, which is
+why the smoke test now checks that nothing on the page needs a glyph the
+font hasn't got.
+
+Labels now come from the order card's own `MEASUREMENT_FIELDS`, so this slip
+and the one the order card prints say the same words. **Real Urdu on the PDF
+is still to do** — it needs an embedded Nastaliq font plus
+`arabic-reshaper`/`python-bidi` for letter joining and right-to-left order;
+neither is installed, and doing half of it prints isolated letters backwards.
+Not silently dropped, just not pretended at.
+
+**The text receipt ran off the roll.** Its dividers are drawn at 40
+characters and `center()` does not truncate, so `Daman : Round Daman
+Stitch : 1. Single Stitch` (47) and the footer (42) wrapped mid-value on an
+80mm printer. One style per line now, each label padded to a fixed width,
+every line 40 characters or fewer.
+
+**One spelling of the shop's name.** It had drifted into three. The sidebar,
+the receipts and the confirmation SMS said "Jhagra Creation & Fabrics"; the
+window title said "Jhagra Textile & Clothing — Atelier Ledger"; and the API's
+`InvoiceEngine` still carried the starter template's "ATELIER TAILORING &
+DESIGN STUDIO" over a "+92 300 1234567" that belongs to nobody — on a
+document that goes to a customer.
+
+`app/services/shop_identity.py` is now the only place it is written down, and
+everything that prints or displays it reads from there: the window title, the
+two PDF mastheads, the text receipt, the task slip, the API invoice (text and
+HTML), the CLI help, the server banner, the backup filename prefix. Address
+and phone are deliberately empty — a made-up phone number on a receipt is
+worse than none — and the masthead skips whatever is blank, so filling them
+in is all it takes. `AtelierERPApp` is `JhagraERPApp`; the migrator's default
+database name is `jtq_database.db`.
+
+**Tests** — `app/tests/test_order_reprint.py` (13) drives a real
+`ExcelManager` on a temp directory: the reprint regression itself, two orders
+by one customer keeping separate measurements, the profile fallback and its
+flag, the all-zero snapshot, the orphaned row, the sleeve/shalwar round trip,
+and the legacy column map being a genuine inverse of `customer_row` (it was
+spelled out longhand in three files; one constant now).
+`app/tests/test_shop_identity.py` (16) greps the source files rather than only
+the constants, because the failure mode is somebody typing the name inline
+again, and covers the receipt content the masthead change sits on top of.
+The GUI smoke test gained six checks around the PDF, including the dingbat
+one and a width check on the fallback note.
+
+All six defects mutation-tested: re-introducing each fails exactly the tests
+that name it. The dingbat mutation is the instructive one — it fails one
+check out of 154, and every assertion about the text on the page still
+passes.
+
+**Verification:** unit tests **82/82** (was 51); GUI smoke **154/154** (was
+146); both slip PDFs rendered and read back operator by operator to confirm
+the snapshot numbers, the two extra styles, no substituted glyphs and no
+column collision; dashboard screenshotted.
+
+---
