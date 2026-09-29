@@ -47,3 +47,11 @@ ehthumbs.db
 *.tmp
 *.log
 *.bak
+
+# explore/ -- build outputs from the C++/Rust/Java prototypes. Source only.
+explore/**/*.exe
+explore/**/*.rlib
+explore/**/*.pdb
+explore/scheduler-java/out/
+explore/barcode-rs/target/
+explore/**/*.svg

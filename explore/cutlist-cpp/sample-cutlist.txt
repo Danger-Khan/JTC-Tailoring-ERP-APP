@@ -1,0 +1,21 @@
+# A week's cutting off 50-metre bolts of the same cloth.
+# Each piece is one garment's fabric requirement.
+
+bolt 50
+kerf 0.1        # straightening cut + seam allowance per piece
+
+ORD-101   6.5   # Shalwar kameez, large
+ORD-102   2.4   # Waistcoat
+ORD-103   1.6   # Pant
+ORD-104  11.0   # Sherwani
+ORD-105   6.2   # Shalwar kameez
+ORD-106   8.5   # Coat
+ORD-107   6.4   # Shalwar kameez
+ORD-108   6.0   # Shalwar kameez
+ORD-109  10.5   # Sherwani
+ORD-110   2.2   # Waistcoat
+ORD-111   6.3   # Shalwar kameez
+ORD-112   1.7   # Pant
+ORD-113   9.0   # Coat
+ORD-114   6.1   # Shalwar kameez
+ORD-115   2.5   # Waistcoat

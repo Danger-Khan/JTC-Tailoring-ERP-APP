@@ -1,0 +1,27 @@
+{
+  "start": "2026-02-02",
+  "workingDays": ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY"],
+
+  "tailors": [
+    { "id": "E-1", "name": "Usman Ali",   "hoursPerDay": 8, "skills": ["kameez", "shalwar", "pant"] },
+    { "id": "E-2", "name": "Imran Khan",  "hoursPerDay": 7, "skills": ["kameez", "waistcoat"] },
+    { "id": "E-3", "name": "Bilal Ahmed", "hoursPerDay": 6, "skills": ["sherwani", "coat", "waistcoat"] }
+  ],
+
+  "orders": [
+    { "id": "ORD-101", "customer": "Farman Saim",  "garment": "Shalwar Kameez", "hours": 9,  "due": "2026-02-05", "skill": "kameez" },
+    { "id": "ORD-102", "customer": "Hamza Sheikh", "garment": "Waistcoat",      "hours": 5,  "due": "2026-02-06", "skill": "waistcoat" },
+    { "id": "ORD-103", "customer": "Bilal Ahmed",  "garment": "Pant",           "hours": 3,  "due": "2026-02-04", "skill": "pant" },
+    { "id": "ORD-104", "customer": "Ayesha Khan",  "garment": "Sherwani",       "hours": 22, "due": "2026-02-09", "skill": "sherwani", "priority": 2 },
+    { "id": "ORD-105", "customer": "Saad Malik",   "garment": "Shalwar Kameez", "hours": 9,  "due": "2026-02-07", "skill": "kameez" },
+    { "id": "ORD-106", "customer": "Zain Abbas",   "garment": "Coat",           "hours": 14, "due": "2026-02-10", "skill": "coat" },
+    { "id": "ORD-107", "customer": "Noor Fatima",  "garment": "Shalwar Kameez", "hours": 9,  "due": "2026-02-06", "skill": "kameez" },
+    { "id": "ORD-108", "customer": "Kashif Raza",  "garment": "Shalwar Kameez", "hours": 9,  "due": "2026-02-05", "skill": "kameez" },
+
+    { "id": "ORD-109", "customer": "Rizwan Sheikh", "garment": "Sherwani",      "hours": 20, "due": "2026-02-07", "skill": "sherwani",
+      "_note": "deliberately impossible: 20 hours of sherwani work promised for Saturday, behind ORD-104, on the shop's only sherwani tailor" },
+
+    { "id": "ORD-110", "customer": "Adeel Butt",    "garment": "Bridal Lehenga", "hours": 30, "due": "2026-02-20", "skill": "embroidery",
+      "_note": "nobody on duty has this skill" }
+  ]
+}

@@ -1,0 +1,13 @@
+[package]
+name = "jtq-barcode"
+version = "0.1.0"
+edition = "2021"
+description = "Code 128 encoder and decoder for tailoring order tickets"
+
+# No dependencies on purpose. The whole point of the exercise is that the
+# symbology is small enough to get exactly right by hand, and a barcode that
+# is 95% right is a barcode that does not scan.
+[dependencies]
+
+[profile.release]
+opt-level = 2
