@@ -62,7 +62,19 @@ def memoize_with_ttl(ttl_seconds=300):
                 timestamps.pop(k, None)
             
             return result
-        
+
+        def cache_clear():
+            """Drop everything cached, so the next call really runs.
+
+            Needed to test a memoized probe at all: without it a test has to
+            outwait the TTL, and the system-monitor probes are cached for up
+            to a minute. Named to match functools.lru_cache so it reads the
+            same way.
+            """
+            cache.clear()
+            timestamps.clear()
+
+        wrapper.cache_clear = cache_clear
         return wrapper
     return decorator
 

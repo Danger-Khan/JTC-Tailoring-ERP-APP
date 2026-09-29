@@ -20,6 +20,7 @@ try:
     from views.expense_view import ExpenseView
     from utils import admin_password as pw_store
     from services import system_monitor as sysmon
+    from utils import animate
     from services.notification_service import NotificationService
     from services.garment_engine import GarmentCalculator
 except ImportError:
@@ -32,6 +33,7 @@ except ImportError:
     from app.views.expense_view import ExpenseView
     from app.utils import admin_password as pw_store
     from app.services import system_monitor as sysmon
+    from app.utils import animate
     from app.services.notification_service import NotificationService
     from app.services.garment_engine import GarmentCalculator
 
@@ -286,6 +288,15 @@ class JhagraERPApp(tk.Tk):
         # Optional features, both off unless the owner switched them on.
         self.system_monitor_enabled = bool(saved_state.get("system_monitor", False))
         self.ai_panel_enabled = bool(saved_state.get("ai_panel", False))
+        # Motion is on by default but switchable: this runs on shop counter
+        # machines, and animation is the first thing to drop on a slow one.
+        self.animations_enabled = bool(saved_state.get("animations", True))
+        animate.set_enabled(self.animations_enabled)
+        # Every dialog in the app is a plain tk.Toplevel, so fade them all
+        # here rather than at nine call sites -- and any future one comes
+        # along for free. -alpha is the only real opacity Tk has, and it is
+        # per window, which is why in-page cards move instead.
+        self.bind_class("Toplevel", "<Map>", self._fade_in_dialog, add="+")
         self._sysmon_job = None
         # Written by the probe worker, read only on the Tk thread.
         self._sysmon_latest = None
@@ -923,11 +934,17 @@ class JhagraERPApp(tk.Tk):
         self.expense_view.frame.pack(fill=tk.BOTH, expand=True)
 
     def show_section(self, section_key):
+        previous = getattr(self, "current_section", None)
         for key, frame in self.sections.items():
             frame.pack_forget()
             btn, _ = self.nav_buttons[key]
             btn.configure(bg=self.colors["bg_sidebar"], fg=self.colors["text_muted"])
         self.sections[section_key].pack(fill=tk.BOTH, expand=True)
+        # Let the new page settle upward into place. Only on an actual
+        # change: re-showing the section you are already on should not
+        # twitch, and the first paint after login has enough to do.
+        if previous is not None and previous != section_key:
+            animate.slide_in(self.sections[section_key])
         active_btn, _ = self.nav_buttons[section_key]
         # .nav-active in the design is a recessed well rather than a filled
         # block, so the active item reads as pressed into the sidebar.
@@ -2544,6 +2561,18 @@ class JhagraERPApp(tk.Tk):
         self.cbo_display.set(self._display_mode_label(getattr(self, "display_mode", "fullscreen")))
         self.cbo_display.pack(fill=tk.X, pady=(2, 4))
         self.cbo_display.bind("<<ComboboxSelected>>", self.on_display_mode_change)
+        # Motion lives with Display rather than beside the optional features:
+        # it is on by default and is about how the app looks, not about an
+        # extra panel the owner has to opt into.
+        self.var_animations = tk.BooleanVar(value=self.animations_enabled)
+        self.chk_animations = tk.Checkbutton(
+            c_display, text="Smooth transitions", variable=self.var_animations,
+            command=self.on_animations_toggle, bg=self.colors["bg_chart"],
+            fg=self.colors["text_main"], activebackground=self.colors["bg_chart"],
+            activeforeground=self.colors["text_main"],
+            selectcolor=self.colors["well"], bd=0, highlightthickness=0,
+            font=(FONT_FAMILY, 9), anchor=self._anchor("w"), cursor="hand2")
+        self.chk_animations.pack(fill=tk.X, pady=(2, 2))
         self.lbl_display_hint = tk.Label(c_display, text="F11 toggles · Esc exits full screen",
                                          font=(FONT_FAMILY, 8), bg=self.colors["bg_chart"],
                                          fg=self.colors["text_3"])
@@ -3603,6 +3632,22 @@ class JhagraERPApp(tk.Tk):
     # ==========================================
     # SYSTEM MONITOR (optional)
     # ==========================================
+    def _fade_in_dialog(self, event):
+        """Fade a dialog up as it is mapped.
+
+        Bound on the Toplevel class, so it sees every dialog including ones
+        added later. Guarded three ways: only the dialog itself (not a child
+        being mapped inside it), only once per window, and never the app's
+        own root, which is a tk.Tk and a different class anyway.
+        """
+        window = event.widget
+        if not isinstance(window, tk.Toplevel) or window is self:
+            return
+        if getattr(window, "_jtq_faded", False):
+            return
+        window._jtq_faded = True
+        animate.fade_in_window(window)
+
     def _build_system_monitor(self, parent):
         """A compact machine-health strip at the foot of the sidebar.
 
@@ -3622,14 +3667,31 @@ class JhagraERPApp(tk.Tk):
         tk.Frame(inner, bg=self.colors["border"], height=1).pack(
             fill=tk.X, pady=(0, 4))
 
+        # Two columns, not five stacked rows. Five cost about 80px, which is
+        # more than the sidebar had spare at a windowed height: switching the
+        # strip on pushed the owner block and the theme/language chips off
+        # the bottom of the window, and clipped Disk and GPU with them. The
+        # same five readings fit three rows at half the height.
+        grid = tk.Frame(inner, bg=self.colors["bg_sidebar"])
+        grid.pack(fill=tk.X)
+        grid.columnconfigure(0, weight=1, uniform="sysmon")
+        grid.columnconfigure(1, weight=1, uniform="sysmon")
+
         self.sysmon_rows = {}
-        for key in ("internet", "cpu", "memory", "disk", "gpu"):
-            row = tk.Frame(inner, bg=self.colors["bg_sidebar"])
-            row.pack(fill=tk.X)
-            cap = tk.Label(row, text="", bg=self.colors["bg_sidebar"],
+        cells = (("internet", 0, 0), ("cpu", 0, 1),
+                 ("memory", 1, 0), ("disk", 1, 1),
+                 ("gpu", 2, 0))
+        for key, row_index, column in cells:
+            # GPU is the odd one out and takes the full width, which is
+            # what lets it show VRAM alongside the load.
+            span = 2 if key == "gpu" else 1
+            cell = tk.Frame(grid, bg=self.colors["bg_sidebar"])
+            cell.grid(row=row_index, column=column, columnspan=span,
+                      sticky="ew", padx=(0, 6 if column == 0 and span == 1 else 0))
+            cap = tk.Label(cell, text="", bg=self.colors["bg_sidebar"],
                            fg=self.colors["text_3"], font=(FONT_FAMILY, 7))
             cap.pack(side=self._side(tk.LEFT))
-            val = tk.Label(row, text="—", bg=self.colors["bg_sidebar"],
+            val = tk.Label(cell, text="—", bg=self.colors["bg_sidebar"],
                            fg=self.colors["text_muted"], font=(FONT_FAMILY, 7, "bold"))
             val.pack(side=self._side(tk.RIGHT))
             self.sysmon_rows[key] = (cap, val)
@@ -3752,9 +3814,22 @@ class JhagraERPApp(tk.Tk):
             used, total, pct = disk
             put("disk", "%d%% full" % round(pct), self._load_color(pct))
 
+        # Load alone read as a bare "0%" on a shop counter machine, which
+        # looks like a broken readout rather than an idle card. The VRAM
+        # figure is the half that is actually never zero, so show both.
         gpu = snap.get("gpu")
-        put("gpu", "—" if not gpu else "%d%%" % round(gpu.get("load", 0)),
-            None if not gpu else self._load_color(gpu.get("load", 0)))
+        if not gpu:
+            put("gpu", "—")
+        else:
+            load = gpu.get("load", 0) or 0
+            total_mb = gpu.get("total_mb") or 0
+            if total_mb:
+                text = "%d%% · %.1f/%.0fG" % (round(load),
+                                              (gpu.get("used_mb") or 0) / 1024.0,
+                                              total_mb / 1024.0)
+            else:
+                text = "%d%%" % round(load)
+            put("gpu", text, self._load_color(load))
 
     def _load_color(self, pct):
         """Green under load, amber when it starts to matter, red when it is
@@ -4054,6 +4129,11 @@ class JhagraERPApp(tk.Tk):
         self.system_monitor_enabled = bool(self.var_system_monitor.get())
         self._app_state_for_current_data().save(system_monitor=self.system_monitor_enabled)
         self._apply_system_monitor_visibility()
+
+    def on_animations_toggle(self):
+        self.animations_enabled = bool(self.var_animations.get())
+        animate.set_enabled(self.animations_enabled)
+        self._app_state_for_current_data().save(animations=self.animations_enabled)
 
     def on_ai_panel_toggle(self):
         self.ai_panel_enabled = bool(self.var_ai_panel.get())

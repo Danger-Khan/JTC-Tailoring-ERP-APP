@@ -27,6 +27,11 @@ DEFAULTS = {
     "system_monitor": False,   # machine health readout (net/CPU/RAM/disk/GPU)
     "ai_panel": False,         # the slide-up command bar
 
+    # Motion: pages settle into place, dialogs fade up. On by default --
+    # unlike the two above it costs nothing and adds no clutter -- but
+    # switchable, because a slow counter PC is better off without it.
+    "animations": True,
+
     # bcrypt hash of the admin password. Empty means "never changed", and the
     # login falls back to the built-in default -- so an existing install keeps
     # working after an update instead of locking the owner out.

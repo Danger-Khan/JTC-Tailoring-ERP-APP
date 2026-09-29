@@ -26,6 +26,16 @@ try:
     import psutil
 except ImportError:  # pragma: no cover - exercised by the degraded path
     psutil = None
+else:
+    # Prime the CPU counter. psutil.cpu_percent(interval=None) reports load
+    # since the PREVIOUS call, so the very first one always returns 0.0 --
+    # and 0% is exactly what a broken readout looks like. Calling it once
+    # here means the first reading the sidebar shows is a real measurement
+    # of the time since the app started, not a placeholder.
+    try:
+        psutil.cpu_percent(interval=None)
+    except Exception:  # pragma: no cover - a probe must never break import
+        pass
 
 try:
     from utils.performance import memoize_with_ttl
@@ -57,19 +67,28 @@ def internet_available(timeout=1.2):
     return False
 
 
+# Long enough for a meaningful sample, short enough that a caller on the
+# main thread (the smoke test) does not notice.
+_CPU_SAMPLE_SECONDS = 0.12
+
+
 @memoize_with_ttl(ttl_seconds=3)
 def cpu_percent():
     """Whole-machine CPU load, or None if psutil is missing.
 
-    interval=None makes this non-blocking: psutil returns the load since the
-    previous call instead of sleeping to sample a window. The first call
-    after import therefore reports 0.0, which is why the readout settles a
-    beat after the panel opens.
+    Samples a real window rather than passing interval=None. Non-blocking
+    was the original choice, but it reports load since the PREVIOUS call, so
+    the first reading is always 0.0 and every later one depends on how long
+    ago the cache happened to expire -- on an idle shop PC that showed a
+    steady "0%", which is indistinguishable from a broken readout.
+
+    Blocking here is safe because the only caller is snapshot(), and the GUI
+    runs that on a worker thread precisely so it can afford to wait.
     """
     if psutil is None:
         return None
     try:
-        return float(psutil.cpu_percent(interval=None))
+        return float(psutil.cpu_percent(interval=_CPU_SAMPLE_SECONDS))
     except Exception:
         return None
 
