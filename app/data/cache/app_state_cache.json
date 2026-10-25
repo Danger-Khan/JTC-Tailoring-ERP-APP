@@ -1,0 +1,13 @@
+{
+  "theme": "light",
+  "lang": "ur",
+  "last_section": "dashboard",
+  "geometry": "1536x793+0+54",
+  "display_mode": "windowed",
+  "system_monitor": false,
+  "ai_panel": false,
+  "animations": true,
+  "admin_password_hash": "",
+  "api_url": "",
+  "api_key": ""
+}
